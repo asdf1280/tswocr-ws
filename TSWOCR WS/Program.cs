@@ -66,8 +66,7 @@ namespace TSWOCR_WS {
                 if (path.EndsWith(".html")) {
                     res.ContentType = "text/html";
                     res.ContentEncoding = Encoding.UTF8;
-                }
-                else if (path.EndsWith(".js")) {
+                } else if (path.EndsWith(".js")) {
                     res.ContentType = "application/javascript";
                     res.ContentEncoding = Encoding.UTF8;
                 }
@@ -161,8 +160,7 @@ namespace TSWOCR_WS {
             if (distanceData != null) {
                 isKilo = distanceData.Value.Item2;
                 distanceMeters = distanceData.Value.Item1 * (isKilo ? 1000 : 1);
-            }
-            else {
+            } else {
                 distanceMeters = null;
                 isKilo = false;
             }
@@ -171,13 +169,11 @@ namespace TSWOCR_WS {
             if (speedData != null) {
                 if (0 < prevSpeed && prevSpeed < 15 && speedData > 10 && Math.Abs((speedData ?? 0) * 0.1 - prevSpeed) < Math.Abs((speedData ?? 0) - prevSpeed) && (distanceMeters ?? 0) > 0) {
                     finalSpeed = (speedData ?? 0) / 10.0;
-                }
-                else {
+                } else {
                     finalSpeed = speedData ?? 0;
                 }
                 lastSpeedValid = CurrentMilliseconds();
-            }
-            else {
+            } else {
                 finalSpeed = prevSpeed;
             }
 
@@ -192,21 +188,18 @@ namespace TSWOCR_WS {
                 memoryDistance = distanceMeters ?? 0;
                 anotherValidCount = 0;
                 properDistanceFound = true;
-            }
-            else if (distanceDiv10Valid && isKilo) {
+            } else if (distanceDiv10Valid && isKilo) {
                 memoryDistance = distanceMeters / 10.0 ?? 0;
                 anotherValidCount = 0;
                 properDistanceFound = true;
-            }
-            else {
+            } else {
                 var avgSpd = (prevSpeed + finalSpeed) * 0.5;
                 var estimateDist = (avgSpd / 3.6) * (callTimeGap / 1000);
                 memoryDistance = Math.Abs(prevDetectedDistance - estimateDist);
 
                 if (ValidateDistance(distanceMeters, finalSpeed, callTimeGap, isKilo, anotherDist, prevSpeed)) {
                     anotherValidCount++;
-                }
-                else {
+                } else {
                     anotherValidCount = 0;
                 }
                 if (anotherValidCount > 10) {
@@ -242,6 +235,7 @@ namespace TSWOCR_WS {
             prevSpeed = speed = finalSpeed;
             prevDetectedDistance = memoryDistance;
             distance = finalDistance;
+            anotherDist = distanceMeters ?? 0;
         }
 
         private bool ValidateDistance(double? rawMetersRemain, double currentV, long dataCallInterval, bool isKilo, double prevDist, double prevSpeed) {
@@ -255,8 +249,7 @@ namespace TSWOCR_WS {
                     if (Math.Abs(data * 0.0001 - prevDist) < Math.Abs(data - prevSpeed)) {
                         distanceValid = false;
                     }
-                }
-                else {
+                } else {
                     // if actual moved distance is much higher than estimated, it is probably wrong
                     if (prevDist - data > /*estimate move distance: */Math.Max(currentV, 20d) / 3.6 /*get m/s*/ * callIntervalSeconds * 2.0 /* tolerance */ && currentV > 0) {
                         distanceValid = false;
@@ -266,8 +259,7 @@ namespace TSWOCR_WS {
                 if (prevDist < 1 && data != 0) {
                     distanceValid = true;
                 }
-            }
-            else {
+            } else {
                 distanceValid = false;
             }
             return distanceValid;
@@ -324,8 +316,7 @@ namespace TSWOCR_WS {
 
             try {
                 speed = Double.Parse(rawSpeed);
-            }
-            catch (FormatException) {
+            } catch (FormatException) {
                 return null;
             }
 
@@ -382,8 +373,7 @@ namespace TSWOCR_WS {
             kilo = rawDistance.EndsWith("km");
             try {
                 distance = Double.Parse(rawDistance.Substring(0, rawDistance.Length - (kilo ? 2 : 1)));
-            }
-            catch (FormatException) {
+            } catch (FormatException) {
                 return null;
             }
 
