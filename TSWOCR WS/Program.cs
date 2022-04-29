@@ -181,8 +181,6 @@ namespace TSWOCR_WS {
             bool distanceDiv10Valid = ValidateDistance(distanceMeters / 10.0, finalSpeed, callTimeGap, isKilo, prevDetectedDistance, prevSpeed);
             bool properDistanceFound = false;
 
-            Console.WriteLine(distanceValid || distanceDiv10Valid);
-
             double memoryDistance;
             if (distanceValid) {
                 memoryDistance = distanceMeters ?? 0;
@@ -194,7 +192,7 @@ namespace TSWOCR_WS {
                 properDistanceFound = true;
             } else {
                 var avgSpd = (prevSpeed + finalSpeed) * 0.5;
-                var estimateDist = (avgSpd / 3.6) * (callTimeGap / 1000);
+                var estimateDist = (avgSpd / 3.6) * (callTimeGap / 1000.0);
                 memoryDistance = Math.Abs(prevDetectedDistance - estimateDist);
 
                 if (ValidateDistance(distanceMeters, finalSpeed, callTimeGap, isKilo, anotherDist, prevSpeed)) {
@@ -240,7 +238,6 @@ namespace TSWOCR_WS {
 
         private bool ValidateDistance(double? rawMetersRemain, double currentV, long dataCallInterval, bool isKilo, double prevDist, double prevSpeed) {
             var distanceValid = true;
-            var callIntervalSeconds = dataCallInterval / 1000.0;
 
             if (rawMetersRemain != null) {
                 var data = rawMetersRemain ?? 0;
@@ -251,7 +248,7 @@ namespace TSWOCR_WS {
                     }
                 } else {
                     // if actual moved distance is much higher than estimated, it is probably wrong
-                    if (prevDist - data > /*estimate move distance: */Math.Max(currentV, 20d) / 3.6 /*get m/s*/ * callIntervalSeconds * 2.0 /* tolerance */ && currentV > 0) {
+                    if (Math.Abs(data - prevDist) > /*estimate move distance: */Math.Max(currentV, 20d) / 3.6 /*get m/s*/ * dataCallInterval / 1000.0 * 2.0 /* tolerance */ && currentV > 0) {
                         distanceValid = false;
                     }
                 }
