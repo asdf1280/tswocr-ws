@@ -11,40 +11,31 @@ using WebSocketSharp;
 using WebSocketSharp.Net;
 using WebSocketSharp.Server;
 
-namespace TSWOCR_WS
-{
-    class WebsocketProcessor : WebSocketBehavior
-    {
+namespace TSWOCR_WS {
+    class WebsocketProcessor : WebSocketBehavior {
         public static double speed = 0;
         public static double distance = 0;
-        public WebsocketProcessor()
-        {
+        public WebsocketProcessor() {
 
         }
 
-        protected override void OnMessage(MessageEventArgs e)
-        {
+        protected override void OnMessage(MessageEventArgs e) {
             Send(speed + ";" + distance + "");
         }
     }
-    class Program
-    {
+    class Program {
         static long lastTick;
-        static void Main(string[] args)
-        {
+        static void Main(string[] args) {
             TesseractEngine ocr = new TesseractEngine("tessdata", "eng");
             RawDataProcessor processor = new RawDataProcessor(ocr);
 
-            new Thread(() =>
-            {
-                while (true)
-                {
+            new Thread(() => {
+                while (true) {
                     Console.ReadLine();
                     Console.WriteLine("Reset the speed and distance");
                     processor.Reset();
                 }
-            })
-            {
+            }) {
                 IsBackground = true
             }.Start();
 
@@ -55,8 +46,7 @@ namespace TSWOCR_WS
             sv.AddWebSocketService<WebsocketProcessor>("/");
 
             // Set the HTTP GET request event.
-            sv.OnGet += (sender, e) =>
-            {
+            sv.OnGet += (sender, e) => {
                 var req = e.Request;
                 var res = e.Response;
 
@@ -67,20 +57,17 @@ namespace TSWOCR_WS
 
                 byte[] contents;
 
-                if (!e.TryReadFile(path, out contents))
-                {
+                if (!e.TryReadFile(path, out contents)) {
                     res.StatusCode = (int)HttpStatusCode.NotFound;
 
                     return;
                 }
 
-                if (path.EndsWith(".html"))
-                {
+                if (path.EndsWith(".html")) {
                     res.ContentType = "text/html";
                     res.ContentEncoding = Encoding.UTF8;
                 }
-                else if (path.EndsWith(".js"))
-                {
+                else if (path.EndsWith(".js")) {
                     res.ContentType = "application/javascript";
                     res.ContentEncoding = Encoding.UTF8;
                 }
@@ -91,8 +78,7 @@ namespace TSWOCR_WS
             };
 
             sv.Start();
-            while (true)
-            {
+            while (true) {
                 var prevTick = lastTick;
                 lastTick = DateTime.Now.Ticks;
 
@@ -106,15 +92,13 @@ namespace TSWOCR_WS
 
                 Console.WriteLine(speed + " -> " + Math.Round(distance));
 
-                if (speed == 0 && distance == 0)
-                { // stopped
+                if (speed == 0 && distance == 0) { // stopped
                     Thread.Sleep(1000);
                     WebsocketProcessor.speed = 0;
                     WebsocketProcessor.distance = -1;
                 }
 
-                if (/*speed < 10 || */distance == 0)
-                {
+                if (/*speed < 10 || */distance == 0) {
                     WebsocketProcessor.speed = 0;
                     WebsocketProcessor.distance = -1;
                     continue;
@@ -128,11 +112,9 @@ namespace TSWOCR_WS
 
     }
 
-    class RawDataProcessor
-    {
+    class RawDataProcessor {
         private TesseractEngine ocr;
-        public RawDataProcessor(TesseractEngine engine)
-        {
+        public RawDataProcessor(TesseractEngine engine) {
             this.ocr = engine;
         }
 
@@ -143,33 +125,30 @@ namespace TSWOCR_WS
         private double emulatedKiloDistance = 0;
 
         private long lastDataCall = CurrentMilliseconds();
-        private long lastSpeedValid = CurrentMilliseconds();
-        private long lastDistValid = CurrentMilliseconds();
+        private long lastSpeedValid = 0;
+        private long lastDistValid = 0;
 
         private int anotherValidCount = 0;
         private double anotherDist = 0;
 
-        private static long CurrentMilliseconds()
-        {
+        private static long CurrentMilliseconds() {
             return DateTime.Now.Ticks / 10000;
         }
 
-        public void Reset()
-        {
+        public void Reset() {
             prevSpeed = 0;
             prevDetectedDistance = 0;
             anotherDist = 0;
             anotherValidCount = 0;
 
-            lastSpeedValid = CurrentMilliseconds();
-            lastDistValid = CurrentMilliseconds();
+            lastSpeedValid = 0;
+            lastDistValid = 0;
 
             prevKiloDistance = 0;
             emulatedKiloDistance = 0;
         }
 
-        public void ReadTrainState(out double speed, out double distance)
-        {
+        public void ReadTrainState(out double speed, out double distance) {
             var currentTime = CurrentMilliseconds(); // in ms
             var callTimeGap = currentTime - lastDataCall;
 
@@ -179,32 +158,26 @@ namespace TSWOCR_WS
             double? distanceMeters;
             bool isKilo;
             // Retrieve remaining distance in meters
-            if (distanceData != null)
-            {
+            if (distanceData != null) {
                 isKilo = distanceData.Value.Item2;
                 distanceMeters = distanceData.Value.Item1 * (isKilo ? 1000 : 1);
             }
-            else
-            {
+            else {
                 distanceMeters = null;
                 isKilo = false;
             }
 
             double finalSpeed;
-            if (speedData != null)
-            {
-                if (0 < prevSpeed && prevSpeed < 15 && speedData > 10 && Math.Abs((speedData ?? 0) * 0.1 - prevSpeed) < Math.Abs((speedData ?? 0) - prevSpeed) && (distanceMeters ?? 0) > 0)
-                {
+            if (speedData != null) {
+                if (0 < prevSpeed && prevSpeed < 15 && speedData > 10 && Math.Abs((speedData ?? 0) * 0.1 - prevSpeed) < Math.Abs((speedData ?? 0) - prevSpeed) && (distanceMeters ?? 0) > 0) {
                     finalSpeed = (speedData ?? 0) / 10.0;
                 }
-                else
-                {
+                else {
                     finalSpeed = speedData ?? 0;
                 }
                 lastSpeedValid = CurrentMilliseconds();
             }
-            else
-            {
+            else {
                 finalSpeed = prevSpeed;
             }
 
@@ -212,122 +185,106 @@ namespace TSWOCR_WS
             bool distanceDiv10Valid = ValidateDistance(distanceMeters / 10.0, finalSpeed, callTimeGap, isKilo, prevDetectedDistance, prevSpeed);
             bool properDistanceFound = false;
 
-            double finalDistance;
-            if (distanceValid)
-            {
-                finalDistance = distanceMeters ?? 0;
+            Console.WriteLine(distanceValid || distanceDiv10Valid);
+
+            double memoryDistance;
+            if (distanceValid) {
+                memoryDistance = distanceMeters ?? 0;
                 anotherValidCount = 0;
                 properDistanceFound = true;
             }
-            else if (distanceDiv10Valid && isKilo)
-            {
-                finalDistance = distanceMeters / 10.0 ?? 0;
+            else if (distanceDiv10Valid && isKilo) {
+                memoryDistance = distanceMeters / 10.0 ?? 0;
                 anotherValidCount = 0;
                 properDistanceFound = true;
             }
-            else
-            {
+            else {
                 var avgSpd = (prevSpeed + finalSpeed) * 0.5;
                 var estimateDist = (avgSpd / 3.6) * (callTimeGap / 1000);
-                finalDistance = Math.Abs(prevDetectedDistance - estimateDist);
+                memoryDistance = Math.Abs(prevDetectedDistance - estimateDist);
 
-                if (ValidateDistance(distanceMeters, finalSpeed, callTimeGap, isKilo, anotherDist, prevSpeed))
-                {
+                if (ValidateDistance(distanceMeters, finalSpeed, callTimeGap, isKilo, anotherDist, prevSpeed)) {
                     anotherValidCount++;
                 }
-                else
-                {
+                else {
                     anotherValidCount = 0;
                 }
-                if (anotherValidCount > 30)
-                {
-                    finalDistance = anotherDist;
+                if (anotherValidCount > 10) {
+                    memoryDistance = anotherDist;
                 }
             }
 
-            if (properDistanceFound && isKilo)
-            {
-                if(prevKiloDistance != finalDistance)
-                {
-                    var diff = prevKiloDistance - finalDistance;
-                    if (prevKiloDistance != 0 && (diff == 1000 || diff == 100 || prevKiloDistance == 0))
-                    {
+            double finalDistance = memoryDistance;
+
+            if (properDistanceFound && isKilo) {
+                if (prevKiloDistance != memoryDistance) {
+                    var diff = prevKiloDistance - memoryDistance;
+                    if (prevKiloDistance != 0 && (diff == 1000 || diff == 100 || prevKiloDistance == 0)) {
                         emulatedKiloDistance = prevKiloDistance;
                     }
-                    prevKiloDistance = finalDistance;
+                    prevKiloDistance = memoryDistance;
                 }
-                if(emulatedKiloDistance != 0)
-                {
+                if (emulatedKiloDistance != 0) {
                     emulatedKiloDistance -= (finalSpeed / 3.6) * (callTimeGap / 1000.0);
-                    finalDistance = Math.Max(finalDistance, emulatedKiloDistance);
+                    finalDistance = Math.Max(memoryDistance, emulatedKiloDistance);
                 }
             }
 
-            if (finalSpeed == 0)
-            {
-                Reset();
+            if (finalSpeed == 0) {
+                anotherValidCount = 0;
+                prevKiloDistance = 0;
+                emulatedKiloDistance = 0;
+                memoryDistance = 0;
                 finalDistance = 0;
             }
 
             lastDataCall = currentTime;
             prevSpeed = speed = finalSpeed;
-            prevDetectedDistance = distance = finalDistance;
+            prevDetectedDistance = memoryDistance;
+            distance = finalDistance;
         }
 
-        private bool ValidateDistance(double? rawMetersRemain, double currentV, long dataCallInterval, bool isKilo, double prevDist, double prevSpeed)
-        {
+        private bool ValidateDistance(double? rawMetersRemain, double currentV, long dataCallInterval, bool isKilo, double prevDist, double prevSpeed) {
             var distanceValid = true;
             var callIntervalSeconds = dataCallInterval / 1000.0;
 
-            if (rawMetersRemain != null)
-            {
+            if (rawMetersRemain != null) {
                 var data = rawMetersRemain ?? 0;
 
-                if (isKilo)
-                {
-                    if (Math.Abs(data * 0.0001 - prevDist) < Math.Abs(data - prevSpeed))
-                    {
+                if (isKilo) {
+                    if (Math.Abs(data * 0.0001 - prevDist) < Math.Abs(data - prevSpeed)) {
                         distanceValid = false;
                     }
                 }
-                else
-                {
+                else {
                     // if actual moved distance is much higher than estimated, it is probably wrong
-                    if (Math.Abs(data - prevDist) > /*estimate move distance: */Math.Max(currentV, 20d) / 3.6 /*get m/s*/ * callIntervalSeconds * 2 /* tolerance */ && currentV > 0)
-                    {
+                    if (prevDist - data > /*estimate move distance: */Math.Max(currentV, 20d) / 3.6 /*get m/s*/ * callIntervalSeconds * 2.0 /* tolerance */ && currentV > 0) {
                         distanceValid = false;
                     }
                 }
 
-                if (prevDist < 1 && data != 0)
-                {
+                if (prevDist < 1 && data != 0) {
                     distanceValid = true;
                 }
             }
-            else
-            {
+            else {
                 distanceValid = false;
             }
             return distanceValid;
         }
 
-        private double? OCRSpeedRead()
-        {
+        private double? OCRSpeedRead() {
             Rectangle speedBounds = new Rectangle(2070, 1235, 120, 40);
 
             string rawSpeed;
             double speed;
 
-            using (Bitmap bitmap = new Bitmap(speedBounds.Width, speedBounds.Height))
-            {
-                using (Graphics g = Graphics.FromImage(bitmap))
-                {
+            using (Bitmap bitmap = new Bitmap(speedBounds.Width, speedBounds.Height)) {
+                using (Graphics g = Graphics.FromImage(bitmap)) {
                     g.CopyFromScreen(new Point(speedBounds.Left, speedBounds.Top), Point.Empty, speedBounds.Size);
                 }
-                for (var y = 0; y < bitmap.Height; y++)
-                {
-                    for (var x = 0; x < bitmap.Width; x++)
-                    {
+                for (var y = 0; y < bitmap.Height; y++) {
+                    for (var x = 0; x < bitmap.Width; x++) {
                         //if (ColorDist(bitmap.GetPixel(x, y), Color.White) < 50)
                         //{
                         //    bitmap.SetPixel(x, y, Color.Black);
@@ -339,8 +296,7 @@ namespace TSWOCR_WS
                         //}
                         Color inv = bitmap.GetPixel(x, y);
 
-                        if (inv.R < 150 && inv.G < 150 && inv.B < 150)
-                        {
+                        if (inv.R < 150 && inv.G < 150 && inv.B < 150) {
                             bitmap.SetPixel(x, y, Color.White);
                             continue;
                         }
@@ -362,41 +318,33 @@ namespace TSWOCR_WS
                 newBitmap.Dispose();
             }
 
-            if (rawSpeed.Length <= 0 || rawSpeed.Contains("No"))
-            {
+            if (rawSpeed.Length <= 0 || rawSpeed.Contains("No")) {
                 return null;
             }
 
-            try
-            {
+            try {
                 speed = Double.Parse(rawSpeed);
             }
-            catch (FormatException)
-            {
+            catch (FormatException) {
                 return null;
             }
 
             return speed;
         }
 
-        private (double, bool)? OCRDistanceAndIsKiloRead()
-        {
+        private (double, bool)? OCRDistanceAndIsKiloRead() {
             Rectangle distanceBounds = new Rectangle(370, 143, 90, 39);
 
             string rawDistance;
             bool kilo;
             double distance;
 
-            using (Bitmap bitmap = new Bitmap(distanceBounds.Width, distanceBounds.Height))
-            {
-                using (Graphics g = Graphics.FromImage(bitmap))
-                {
+            using (Bitmap bitmap = new Bitmap(distanceBounds.Width, distanceBounds.Height)) {
+                using (Graphics g = Graphics.FromImage(bitmap)) {
                     g.CopyFromScreen(new Point(distanceBounds.Left, distanceBounds.Top), Point.Empty, distanceBounds.Size);
                 }
-                for (var y = 0; y < bitmap.Height; y++)
-                {
-                    for (var x = 0; x < bitmap.Width; x++)
-                    {
+                for (var y = 0; y < bitmap.Height; y++) {
+                    for (var x = 0; x < bitmap.Width; x++) {
                         //if (ColorDist(bitmap.GetPixel(x, y), Color.White) < 50) {
                         //    bitmap.SetPixel(x, y, Color.Black);
                         //} else {
@@ -405,8 +353,7 @@ namespace TSWOCR_WS
                         //}
                         Color inv = bitmap.GetPixel(x, y);
 
-                        if (inv.R < 150 && inv.G < 150 && inv.B < 150)
-                        {
+                        if (inv.R < 150 && inv.G < 150 && inv.B < 150) {
                             bitmap.SetPixel(x, y, Color.White);
                             continue;
                         }
@@ -428,26 +375,22 @@ namespace TSWOCR_WS
                 newBitmap.Dispose();
             }
 
-            if (rawDistance.Length <= 0 || rawDistance.Contains("Empty"))
-            {
+            if (rawDistance.Length <= 0 || rawDistance.Contains("Empty")) {
                 return null;
             }
 
             kilo = rawDistance.EndsWith("km");
-            try
-            {
+            try {
                 distance = Double.Parse(rawDistance.Substring(0, rawDistance.Length - (kilo ? 2 : 1)));
             }
-            catch (FormatException)
-            {
+            catch (FormatException) {
                 return null;
             }
 
             return (distance, kilo);
         }
 
-        static double ColorDist(Color a, Color b)
-        {
+        static double ColorDist(Color a, Color b) {
             return Math.Sqrt(Math.Pow(a.R - b.R, 2) + Math.Pow(a.G - b.G, 2) + Math.Pow(a.G - b.G, 2) + Math.Pow(a.G - b.G, 2));
         }
     }
