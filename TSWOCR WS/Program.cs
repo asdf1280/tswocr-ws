@@ -15,12 +15,29 @@ namespace TSWOCR_WS {
     class WebsocketProcessor : WebSocketBehavior {
         public static double speed = 0;
         public static double distance = 0;
+        
+        public static event EventHandler ResetRequested;
+        
         public WebsocketProcessor() {
 
         }
 
         protected override void OnMessage(MessageEventArgs e) {
-            Send(speed + ";" + distance + "");
+            if (e.Data == "reset")
+            {
+                ResetRequested(null, null);
+            }
+            else
+                //new Thread(() =>
+                //{
+                //    var end = DateTime.Now.Ticks + (2000 * TimeSpan.TicksPerMillisecond);
+                //    while(DateTime.Now.Ticks < end && this.State == WebSocketState.Open)
+                //    {
+                //        Send(speed + ";" + distance);
+                //        Thread.Sleep(50);
+                //    }
+                //}).Start();
+                Send(speed + ";" + distance);
         }
     }
     class Program {
@@ -38,6 +55,11 @@ namespace TSWOCR_WS {
             }) {
                 IsBackground = true
             }.Start();
+
+            WebsocketProcessor.ResetRequested += (sender, e) => {
+                Console.WriteLine("Reset the speed and distance");
+                processor.Reset();
+            };
 
             lastTick = DateTime.Now.Ticks;
 
@@ -120,7 +142,9 @@ namespace TSWOCR_WS {
         private double prevSpeed = 0;
         private double prevDetectedDistance = 0;
 
+        private double prevPrevKiloDistance = 0;
         private double prevKiloDistance = 0;
+        private double lastKiloFactor = 1;
         private double emulatedKiloDistance = 0;
 
         private long lastDataCall = CurrentMilliseconds();
@@ -143,8 +167,10 @@ namespace TSWOCR_WS {
             lastSpeedValid = 0;
             lastDistValid = 0;
 
+            prevPrevKiloDistance = 0;
             prevKiloDistance = 0;
             emulatedKiloDistance = 0;
+            lastKiloFactor = 1;
         }
 
         public void ReadTrainState(out double speed, out double distance) {
@@ -167,7 +193,9 @@ namespace TSWOCR_WS {
 
             double finalSpeed;
             if (speedData != null) {
-                if (0 < prevSpeed && prevSpeed < 15 && speedData > 10 && Math.Abs((speedData ?? 0) * 0.1 - prevSpeed) < Math.Abs((speedData ?? 0) - prevSpeed) && (distanceMeters ?? 0) > 0) {
+                if (0 < prevSpeed && prevSpeed < 15 && speedData > 10 && Math.Abs(((speedData ?? 0) * 0.1) - prevSpeed) < Math.Abs((speedData ?? 0) - prevSpeed)/* && (distanceMeters ?? 0) > 0*/) {
+                    finalSpeed = (speedData ?? 0) / 10.0;
+                } else if (0 < prevSpeed && prevSpeed < 2 && speedData < 10 && speedData > 1 && Math.Abs(((speedData ?? 0) / 10.0) - prevSpeed) < Math.Abs((speedData ?? 0) - prevSpeed)/* && (distanceMeters ?? 0) > 0*/) {
                     finalSpeed = (speedData ?? 0) / 10.0;
                 } else {
                     finalSpeed = speedData ?? 0;
@@ -186,7 +214,7 @@ namespace TSWOCR_WS {
                 memoryDistance = distanceMeters ?? 0;
                 anotherValidCount = 0;
                 properDistanceFound = true;
-            } else if (distanceDiv10Valid && isKilo) {
+            } else if (distanceDiv10Valid && isKilo && distanceMeters / 10.0 >= 1000) {
                 memoryDistance = distanceMeters / 10.0 ?? 0;
                 anotherValidCount = 0;
                 properDistanceFound = true;
@@ -210,13 +238,18 @@ namespace TSWOCR_WS {
             if (properDistanceFound && isKilo) {
                 if (prevKiloDistance != memoryDistance) {
                     var diff = prevKiloDistance - memoryDistance;
-                    if (prevKiloDistance != 0 && (diff == 1000 || diff == 100 || prevKiloDistance == 0)) {
+                    if (prevPrevKiloDistance != 0 && prevKiloDistance != 0 && (diff == 1000 || diff == 100 || prevKiloDistance == 0)) {
+                        var distanceDiff = prevPrevKiloDistance - emulatedKiloDistance;
+                        Console.WriteLine(distanceDiff + ", " + diff + ", " + Math.Round(lastKiloFactor * 100) / 100.0);
+                        lastKiloFactor /= distanceDiff / diff;
+                        if (lastKiloFactor < 0.1) lastKiloFactor = 1;
                         emulatedKiloDistance = prevKiloDistance;
                     }
+                    prevPrevKiloDistance = prevKiloDistance;
                     prevKiloDistance = memoryDistance;
                 }
                 if (emulatedKiloDistance != 0) {
-                    emulatedKiloDistance -= (finalSpeed / 3.6) * (callTimeGap / 1000.0);
+                    emulatedKiloDistance -= ((finalSpeed / 3.6) * (callTimeGap / 1000.0)) * lastKiloFactor;
                     finalDistance = Math.Max(memoryDistance, emulatedKiloDistance);
                 }
             }
@@ -224,7 +257,9 @@ namespace TSWOCR_WS {
             if (finalSpeed == 0) {
                 anotherValidCount = 0;
                 prevKiloDistance = 0;
+                prevPrevKiloDistance = 0;
                 emulatedKiloDistance = 0;
+                lastKiloFactor = 1;
                 memoryDistance = 0;
                 finalDistance = 0;
             }
@@ -312,7 +347,10 @@ namespace TSWOCR_WS {
             }
 
             try {
-                speed = Double.Parse(rawSpeed);
+                speed = double.Parse(rawSpeed);
+                if (rawSpeed.StartsWith("0") && !rawSpeed.Contains(".")) {
+                    speed /= 10.0;
+                }
             } catch (FormatException) {
                 return null;
             }
