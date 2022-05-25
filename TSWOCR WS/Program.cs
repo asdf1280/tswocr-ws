@@ -4,7 +4,9 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Net.Sockets;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using Tesseract;
 using WebSocketSharp;
@@ -26,6 +28,21 @@ namespace TSWOCR_WS {
             if (e.Data == "reset")
             {
                 ResetRequested(null, null);
+            }
+            else if(Regex.IsMatch(e.Data, @"ap(-1|[\d]+)")) {
+                var m = Regex.Match(e.Data, @"ap(-1|[\d]+)");
+                var brk = int.Parse(m.Groups[1].Value);
+                new Thread(() => {
+                    try {
+                        TcpClient cl = new TcpClient("127.0.0.1", 4776);
+                        BinaryWriter bw = new BinaryWriter(cl.GetStream());
+                        bw.Write(brk);
+                        bw.Flush();
+                        cl.Close();
+                    } catch {
+
+                    }
+                }).Start();
             }
             else
                 //new Thread(() =>
