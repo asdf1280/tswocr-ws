@@ -1,0 +1,1158 @@
+<html>
+
+<head>
+    <link rel="stylesheet" href="./styles.css" />
+
+    <!-- <script src="./jquery-3.6.0.js"></script> -->
+    <!-- Linked list for acceleration rate calculation -->
+    <script>
+        class ListNode {
+            /** @type {ListNode} */
+            next;
+            /** @type {number} */
+            at;
+            /** @type {number} */
+            spd;
+
+            /**
+             * @param {number} at
+             * @param {number} spd
+             */
+            constructor(at, spd) {
+                this.at = at;
+                this.spd = spd;
+            }
+        }
+    </script>
+</head>
+
+<body>
+    <div id="initialDisplay">
+        <div>Press to start</div>
+    </div>
+    <div id="root">
+        <div class="box" id="box-1">
+            <div class="box" id="box-1-1">
+                <div class="data-text"></div>
+                <div id="ruler1">
+                </div>
+                <div id="ruler2">
+                </div>
+                <div id="ruler3">
+                </div>
+                <div id="current">
+                </div>
+                <div id="currentAcc">
+                </div>
+            </div>
+            <div class="box" id="box-1-2">
+                <div id="speedContainer">
+                    <canvas id="speedRing"></canvas>
+                </div>
+                <div id="speedDisplay">
+                    <div id="speedTextbox">
+                        <div class="speed-text">0</div>
+                        <div class="speed-unit">km/h</div>
+                    </div>
+                    <div id="accBox">100kmhs</div>
+                </div>
+            </div>
+            <div class="box" id="box-1-3">
+                <div class="label">DECEL</div>
+                <div class="label" id="decelRate">Loading</div>
+                <div class="switchBox" id="decelSet">
+                    <div class="switch">▽</div>
+                    <div class="switch">△</div>
+                </div>
+                <div class="label">SPD GAUGE</div>
+                <div class="label" id="spdPreset">Loading</div>
+                <div class="switchBox" id="spdSet">
+                    <div class="switch">▽</div>
+                    <div class="switch">△</div>
+                </div>
+                <div class="label">OCR SYS</div>
+                <div class="simpleBox">
+                    <div class="switch" id="ocrReset">RST</div>
+                </div>
+                <div class="label">WARN SND</div>
+                <div class="simpleBox">
+                    <div class="switch" id="warnOverrideBtn">OVRD</div>
+                    <div class="switch" id="autopilotBtn">AP</div>
+                </div>
+            </div>
+        </div>
+        <div class="box" id="box-2">
+            <div id="legData">** DRIVE REPORT WILL BE SHOWN HERE **</div>
+        </div>
+    </div>
+
+    <!-- CSS Calculation -->
+    <script>
+        {
+            let obs = new ResizeObserver((entries) => {
+                for (let entry of entries) {
+                    let s = entry.contentRect;
+                    if (s.width > s.height) {
+                        entry.target.style["flex-direction"] = "column";
+                    } else {
+                        entry.target.style["flex-direction"] = "row";
+                    }
+                }
+            })
+            obs.observe(document.querySelector("#box-1-2"));
+        }
+
+        function rad(angle) {
+            return angle * Math.PI / 180;
+        }
+    </script>
+    <!-- Warning sound module -->
+    <script>
+        class AudioEffectModule {
+            /** @type {AudioContext} */
+            ctx;
+            constructor() {
+                this.ctx = new AudioContext();
+            }
+
+            /**
+             * @param misc {{gain?: number, type?: OscillatorNode.type}}
+             */
+            click(hz, dur, delay = 0, misc = {}) {
+                let ctx = this.ctx;
+                let n = ctx.createOscillator();
+                let g = ctx.createGain();
+                n.connect(g);
+                g.connect(ctx.destination);
+
+                g.gain.value = misc.gain ?? 1;
+
+                n.type = misc.type ?? "sine";
+                n.frequency.value = hz;
+
+                n.start(ctx.currentTime + delay / 1000.0);
+                n.stop(ctx.currentTime + delay / 1000.0 + dur / 1000.0);
+            }
+
+            etcsWarning(delay = 0) { // 400ms sound
+                this.click(932.3275230361799, 100, 0 + delay);
+                this.click(932.3275230361799, 100, 200 + delay);
+                return 100 + 200 + 100;
+            }
+
+            etcsOverspeed(delay = 0) { // 580ms
+                this.click(523, 180, 0 + delay);
+                this.click(784, 400, 180 + delay);
+                return 180 + 400;
+            }
+
+            etcsOverspeedShort(delay = 0) {
+                this.click(523, 180, 0 + delay);
+                this.click(784, 250, 180 + delay);
+                return 180 + 250;
+            }
+
+            etcsOverspeedRepeat(count, delay = 0) { // 430 * 5 + 150ms
+                let totalDelay = delay;
+                for (let i = 0; i < count; i++) {
+                    totalDelay += this.etcsOverspeed(totalDelay);
+                }
+                return totalDelay - delay;
+            }
+
+            etcsOverspeedSevere(count, delay = 0, lastLong = true) { // 430 * 5 + 150ms
+                let totalDelay = delay;
+                for (let i = 0; i < count - 1; i++) {
+                    totalDelay += this.etcsOverspeedShort(totalDelay);
+                }
+                if (lastLong) {
+                    totalDelay += this.etcsOverspeed(totalDelay);
+                } else {
+                    totalDelay += this.etcsOverspeedShort(totalDelay);
+                }
+                return totalDelay - delay;
+            }
+
+            welcomeSound(delay = 0) {
+                // this.click(1046.5022612023945, 100, 0 + delay);
+                // this.click(1046.5022612023945, 100, 200 + delay);
+                // return 400;
+                return this.etcsWarning(delay);
+            }
+
+            buttonPressSound(delay = 0) {
+                // this.click(1046.5022612023945, 100, 0 + delay);
+                // this.click(1046.5022612023945, 100, 200 + delay);
+                // return 400;
+                return this.click(1976, 100, delay, { gain: 0.3, type: "sawtooth" })
+                // return this.click(880, 100, delay, {gain: 0.3, type: "sawtooth"})
+            }
+
+            autopilotWarningSound(delay = 0) {
+                let totalDelay = delay;
+                for (let n = 0; n < 3; n++) {
+                    let d = delay + 400 * n;
+                    // for (let n = 0; n < 12; n++) {
+                    //     let d = delay + 200 * n;
+                    this.click(1654, 60, d, { gain: 0.75, type: "sine" })
+                    this.click(825, 40, d + 60, { gain: 1, type: "sine" })
+                    this.click(1654, 60, d + 100, { gain: 0.75, type: "sine" })
+                    this.click(825, 40, d + 160, { gain: 1, type: "sine" })
+                    this.click(1654, 20, d + 200, { gain: 0.75, type: "sine" })
+                }
+                totalDelay += 1200;
+                return totalDelay - delay;
+            }
+
+            soundAvailable() {
+                return this.ctx.state === "running"
+            }
+        }
+
+        let audioEngine = new AudioEffectModule();
+    </script>
+    <!-- Preferences -->
+    <script>
+        // abs of deceleration rate
+        const DECEL_PRESETS = [
+            1.5, // Heavy freighter
+            1.8, // Freighter
+            2.5, // Slower brakes
+            2.7, // Normal brakes BR143
+            3.0, // S-Bahn / Nice conditions
+        ]
+        var DECEL_RATE;
+
+        const SPEED_PRESETS = [
+            [100, 5, 20],
+            [180, 10, 20], // MAX SPEED, BAR EVERY, TEXT EVERY
+            [330, 10, 30],
+        ]; // speed wheel
+        var SPEED_PRESET;
+
+        function getDecelRateIndex() {
+            return Math.min(Math.max(0, Number(localStorage.getItem("decelRateIdx") ?? "1")), DECEL_PRESETS.length - 1);
+        }
+        /**
+         * @param {number} value
+         */
+        function setDecelRateIndex(value) {
+            localStorage.setItem("decelRateIdx", Math.min(Math.max(0, value), DECEL_PRESETS.length - 1))
+            loadDecelRate();
+        }
+        function loadDecelRate() {
+            DECEL_RATE = DECEL_PRESETS[getDecelRateIndex()] / 3.6
+            document.getElementById("decelRate").textContent = `${DECEL_PRESETS[getDecelRateIndex()]} km/h\u22C5s`;
+            refreshButtonAvailability();
+        }
+        function getSpeedPresetIndex() {
+            return Math.min(Math.max(0, Number(localStorage.getItem("speedPresetIdx") ?? "1")), SPEED_PRESETS.length - 1);
+        }
+        /**
+         * @param {number} value
+         */
+        function setSpeedPresetIndex(value) {
+            localStorage.setItem("speedPresetIdx", Math.min(Math.max(0, value), SPEED_PRESETS.length - 1))
+            loadSpeedPreset();
+        }
+        function loadSpeedPreset() {
+            SPEED_PRESET = SPEED_PRESETS[getSpeedPresetIndex()]
+            document.getElementById("spdPreset").textContent = `MAX ${SPEED_PRESET[0]} km/h`;
+            refreshButtonAvailability();
+        }
+
+        function refreshButtonAvailability() {
+            let adn = document.getElementById("decelSet").children[0]
+            let aup = document.getElementById("decelSet").children[1]
+            let bdn = document.getElementById("spdSet").children[0]
+            let bup = document.getElementById("spdSet").children[1]
+
+            if (getDecelRateIndex() == 0) {
+                adn.classList.add("disabled")
+            } else {
+                adn.classList.remove("disabled")
+            }
+
+            if (getDecelRateIndex() == DECEL_PRESETS.length - 1) {
+                aup.classList.add("disabled")
+            } else {
+                aup.classList.remove("disabled")
+            }
+
+            if (getSpeedPresetIndex() == 0) {
+                bdn.classList.add("disabled")
+            } else {
+                bdn.classList.remove("disabled")
+            }
+
+            if (getSpeedPresetIndex() == SPEED_PRESETS.length - 1) {
+                bup.classList.add("disabled")
+            } else {
+                bup.classList.remove("disabled")
+            }
+        }
+
+        // Initial load
+        loadDecelRate()
+        loadSpeedPreset()
+    </script>
+    <!-- Panel -->
+    <script>
+        // ELEMENTS
+        let currentGauge = document.querySelector("#current");
+        let acceleration = document.querySelector("#currentAcc");
+        let dataBox = document.querySelector(".data-text");
+        let speedBox = document.querySelector(".speed-text");
+        let accBox = document.querySelector("#accBox");
+        let legData = document.querySelector("#legData");
+
+        // Variables used for speed smoothening
+        let lastSpeed = 0;
+        let lastSpeedAt = Date.now() - 1;
+        let currentSpeed = 0;
+        let currentSpeedAt = Date.now();
+        let drawKillSwitch = false;
+        let dataKillSwitch = false;
+
+        // distance smoothening
+        let lastDataUpdate = 0;
+        let lastDisplayUpdate = 0;
+
+        // Variables used for sound calculation
+        let isDecelActiveNow = false;
+        let isOverspeedActiveNow = false;
+        let isWarnSoundActiveNow = false;
+        let warnSoundNeededSince = 0;
+        let overrideWarningSounds = false;
+        let nextSoundPlay = 0;
+
+        let textDataStore = {
+            legDataString: ""
+        }
+
+        // Autopilot
+        function setApBrake(value) {
+            if (!autopilotEngaged) return;
+            if (value != -1 && value == lastApCmd) return;
+
+            let td = Date.now() - lastApCmdAt;
+            if (td < 1000) return;
+            lastApCmd = value;
+
+            sendPacket(`ap${value}`);
+            lastApCmdAt = Date.now();
+        }
+        function APdisengage() {
+            sendPacket("ap-1");
+            autopilotEngaged = false;
+            lastApCmd = -1;
+            audioEngine.autopilotWarningSound(0);
+        }
+        function APengage() {
+            autopilotEngaged = true;
+            sendPacket("ap-1");
+            apSpeedZero = -1;
+        }
+        let autopilotEngaged = false;
+        let apSpeedZero = -1;
+        let lastApCmd = -1;
+        let lastApCmdAt = 0;
+        const apStandardEffort = 6;
+        const apMaxEffort = 9;
+
+        // Runtime variables
+        let pingRequestedAt = 0;
+
+        // play history function
+        class HistoryManager {
+            /** @type {boolean} */
+            moving = false;
+            /** @type {number} */
+            departedAt = 0; // ms
+            /** @type {number} */
+            legDistanceMeters = 0; // m
+            /** @type {number} */
+            lastRecordAt = 0; // ms
+            /** @type {number} */
+            lastVelocity = 0; // in m/s
+
+            /**
+             * @param {number} time
+             */
+            startLeg(time) {
+                this.moving = true;
+                this.departedAt = time;
+                this.lastRecordAt = this.departedAt;
+                this.legDistanceMeters = 0;
+                this.lastVelocity = 0;
+            }
+
+            /**
+             * @param {number} time
+             * @param {number} velocity velocity of train in m/s
+             */
+            recordLeg(time, velocity) {
+                // return if not moving
+                if (!this.moving)
+                    return;
+                let avgV = (this.lastVelocity + velocity) / 2.0;
+                let dist = avgV * ((time - this.lastRecordAt) / 1000.0);
+
+                this.printLegData("CURRENT DRIVE REPORT", time)
+
+                this.lastRecordAt = time;
+                this.lastVelocity = velocity;
+                this.legDistanceMeters += dist;
+            }
+
+            /**
+             * @param {number} time
+             * @returns {string} result string
+             */
+            finishLeg(time) {
+                this.printLegData("LAST DRIVE REPORT", time)
+
+                this.moving = false;
+                this.departedAt = 0;
+                this.lastRecordAt = 0;
+                this.legDistanceMeters = 0;
+                this.lastVelocity = 0;
+            }
+
+            /**
+             * @param {string} title
+             * @param {number} time
+             */
+            printLegData(title, time) {
+                let elapsedTimeInMs = time - this.departedAt;
+                let avgSpeed = (this.legDistanceMeters) / (elapsedTimeInMs / 1000.0); // in m/s
+                let avgSpeedKphStr = (avgSpeed * 3.6).toFixed(1); // in km/h
+
+                // format elapsedTimeInMs milliseconds to mm:ss format
+                let elapsedTime = new Date(elapsedTimeInMs);
+                let elapsedTimeStr = elapsedTime.getMinutes() + ":" + (elapsedTime.getSeconds() + "").padStart(2, '0');
+
+                let distanceStr = Math.floor(this.legDistanceMeters);
+                legData.textContent = `** ${title} **\nDistance: ${distanceStr}m\nElapsed time: ${elapsedTimeStr}\nAverage speed: ${avgSpeedKphStr}km/h`;
+            }
+
+            /**
+             * @param {number} time
+             * @param {number} velocity velocity of train in m/s
+             */
+            process(time, velocity) {
+                if (this.moving) {
+                    if (velocity == 0) {
+                        this.finishLeg(time);
+                    } else {
+                        this.recordLeg(time, velocity);
+                    }
+                } else {
+                    if (velocity >= 1) {
+                        this.startLeg(time);
+                    }
+                }
+            }
+        }
+        let historyModule = new HistoryManager();
+
+        // Drive data on speed ring
+        class SpeedRingManager {
+            /** @type {HTMLCanvasElement} */
+            canvas;
+            ctx;
+
+            ctxSubA;
+
+            /**
+             * @param {HTMLCanvasElement} element canvas 
+             */
+            constructor(element) {
+                this.canvas = element;
+
+                this.ctxSubA = document.createElement("canvas").getContext("2d");
+
+                this.onResize();
+                this.drawBase();
+
+                this.ctx = this.canvas.getContext("2d");
+            }
+
+            onResize() {
+                let dpr = window.devicePixelRatio || 1;
+                let w = this.canvas.clientWidth * dpr;
+                let h = this.canvas.clientHeight * dpr;
+
+                this.canvas.width = w;
+                this.canvas.height = h;
+
+                this.ctxSubA.canvas.width = w;
+                this.ctxSubA.canvas.height = h;
+
+                this.drawBase();
+            }
+
+            calculateSize() {
+                return Math.min(this.canvas.width, this.canvas.height);
+            }
+
+            /**
+             * @param {number} speed
+             * @param {number} meters
+             * @param {number} timeDif
+             */
+            drawCurrent(speed, meters, timeDif) {
+                const ctx = this.ctx;
+
+                let size = this.calculateSize();
+                let radius = size / 2;
+
+                ctx.resetTransform();
+                ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+
+                ctx.drawImage(this.ctxSubA.canvas, 0, 0);
+
+                ctx.translate(radius, radius);
+                // ctx.save();
+
+                const BAR_COLOR = "#dedede"
+                const OUTER_STROKE = size * 0.06;
+                const LIMIT_STROKE = size * 0.02;
+
+                let maxSpeed = SPEED_PRESET[0];
+                let speedGap = SPEED_PRESET[1];
+                let textGap = SPEED_PRESET[2];
+
+                // current speed in bar
+                {
+                    ctx.moveTo(0, 0);
+                    ctx.beginPath();
+                    ctx.arc(0, 0, radius - OUTER_STROKE / 2, rad(130), rad(130 + (speed / maxSpeed * 280)))
+                    ctx.strokeStyle = "#7d7d7d"
+                    ctx.lineWidth = OUTER_STROKE
+                    ctx.stroke();
+                }
+
+                // gap warning
+                if (timeDif < 1) {
+                    if (bestSpeedKph < speed) {
+                        ctx.moveTo(0, 0);
+                        ctx.beginPath();
+                        ctx.arc(0, 0, radius - LIMIT_STROKE / 2, rad(130 + (bestSpeedKph / maxSpeed * 280)), rad(130 + (speed / maxSpeed * 280)))
+                        ctx.strokeStyle = "red"
+                        ctx.lineWidth = LIMIT_STROKE
+                        ctx.stroke();
+
+                        ctx.restore();
+                        ctx.save();
+
+                        if (speed - bestSpeedKph > 3) {
+                            ctx.moveTo(0, 0);
+                            ctx.beginPath();
+                            ctx.arc(0, 0, radius - OUTER_STROKE / 2, rad(130 + (bestSpeedKph / maxSpeed * 280)), rad(130 + (bestSpeedKph / maxSpeed * 280) + 2))
+                            ctx.strokeStyle = "red"
+                            ctx.lineWidth = OUTER_STROKE
+                            ctx.stroke();
+
+                            ctx.moveTo(0, 0);
+                            ctx.beginPath();
+                            ctx.arc(0, 0, radius - OUTER_STROKE / 2, rad(130 + (speed / maxSpeed * 280) - 2), rad(130 + (speed / maxSpeed * 280)))
+                            ctx.strokeStyle = "red"
+                            ctx.lineWidth = OUTER_STROKE
+                            ctx.stroke();
+                        } else {
+                            ctx.moveTo(0, 0);
+                            ctx.beginPath();
+                            ctx.arc(0, 0, radius - OUTER_STROKE / 2, rad(130 + (bestSpeedKph / maxSpeed * 280)), rad(130 + (speed / maxSpeed * 280)))
+                            ctx.strokeStyle = "red"
+                            ctx.lineWidth = OUTER_STROKE
+                            ctx.stroke();
+                        }
+                    }
+                }
+
+                // draw max speed
+                if (timeDif < 10) {
+                    let spdLimit = bestSpeedKph;
+
+                    ctx.moveTo(0, 0);
+                    ctx.beginPath();
+                    ctx.arc(0, 0, radius - LIMIT_STROKE / 2, rad(130), rad(130 + (spdLimit / maxSpeed * 280)))
+                    ctx.strokeStyle = "#ffbb00"
+                    ctx.lineWidth = LIMIT_STROKE
+                    ctx.stroke();
+                }
+
+                // speed needle
+                ctx.beginPath();
+                ctx.moveTo(0, 0);
+                ctx.rotate(rad(40 + (speed / maxSpeed * 280)))
+                ctx.fillStyle = "red"
+                ctx.fillRect(-6, 0, 12, radius * 0.85);
+
+                // Center circle - since it's just circle no need to restore
+                ctx.beginPath();
+                ctx.moveTo(0, 0);
+                ctx.arc(0, 0, radius / 3, 0, rad(360))
+                ctx.fillStyle = BAR_COLOR;
+                ctx.fill();
+            }
+
+            drawBase() {
+                const ctx = this.ctxSubA;
+
+                let size = this.calculateSize();
+                let radius = size / 2;
+
+                ctx.resetTransform();
+                ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+                ctx.translate(radius, radius);
+                ctx.save();
+
+                // angle range: 90 + 41 ~ 360 + 89 - 41 (d280)
+
+                const OUTER_STROKE = size * 0.06;
+                const LIMIT_STROKE = size * 0.02;
+                const BAR_COLOR = "#dedede"
+
+                ctx.moveTo(0, 0);
+                ctx.beginPath();
+                ctx.arc(0, 0, radius - OUTER_STROKE / 2, rad(90 + 40), rad(90 - 40))
+                ctx.strokeStyle = BAR_COLOR
+                ctx.lineWidth = OUTER_STROKE
+                ctx.stroke();
+
+                // Small graduation
+                let maxSpeed = SPEED_PRESET[0];
+                let speedGap = SPEED_PRESET[1];
+                let textGap = SPEED_PRESET[2];
+                for (let x = 0; x <= maxSpeed; x += speedGap) {
+                    ctx.beginPath();
+                    ctx.restore();
+                    ctx.save()
+                    ctx.moveTo(0, 0);
+                    ctx.rotate(rad(40 + (x / maxSpeed * 280)))
+                    ctx.fillStyle = BAR_COLOR
+                    ctx.fillRect(-3, radius * (1 - 0.23), 6, radius * 0.23);
+                }
+
+                // Large graduation
+                for (let x = 0; x <= maxSpeed; x += textGap) {
+                    ctx.beginPath();
+                    ctx.restore();
+                    ctx.save()
+                    ctx.moveTo(0, 0);
+                    ctx.rotate(rad(40 + (x / maxSpeed * 280)))
+                    ctx.fillStyle = BAR_COLOR
+                    ctx.fillRect(-8, radius * (1 - 0.3), 16, radius * 0.3);
+                }
+
+                // Speed numbers
+                for (let x = 0; x <= SPEED_PRESET[0]; x += SPEED_PRESET[2]) {
+                    ctx.resetTransform();
+
+                    // 0, 0.6r
+                    let angle = 40 + (x / maxSpeed * 280);
+
+                    ctx.translate(radius, radius);
+                    ctx.moveTo(0, 0);
+                    ctx.beginPath();
+
+                    ctx.font = `${radius * 0.1}px sans-serif`;
+                    ctx.fillStyle = "black"
+                    ctx.textAlign = "center";
+                    ctx.fillText(x, -Math.sin(rad(angle)) * 0.6 * radius - 0.01 * radius, Math.cos(rad(angle)) * 0.6 * radius + 0.025 * radius);
+                }
+            }
+        }
+        let speedRingManager = new SpeedRingManager(document.querySelector("#speedRing"));
+        window.addEventListener("resize", () => {
+            speedRingManager.onResize();
+        })
+
+        // Websocket connection
+        /** @type {string} */
+        let wsUrl;
+        if (window.location.href.includes("http")) {
+            wsUrl = window.location.href.replace("http", "ws")
+        } else {
+            wsUrl = "ws://localhost/"
+        }
+        let ws = new WebSocket(wsUrl);
+
+        // Acceleration rate linked list
+
+        /** @type {ListNode} */
+        let first = null;
+        /** @type {ListNode} */
+        let last = null;
+
+        let receivedSpeed = 0;
+        let smoothSpeed = 0;
+        let remainingDistanceOriginal = 0;
+        let remainingDistance = 0;
+
+        let accelerationRate = 0;
+
+        let bestDistanceM = 0;
+        let bestSpeedKph = 0;
+        let timeDiffSeconds = 0;
+
+        // Receive and process data
+        ws.onmessage = (event) => {
+            // decode data
+            let dataText = event.data;
+
+            // Process commands
+            if (dataText === "pong") {
+                document.getElementById("wsLatency").textContent = `${Date.now() - pingRequestedAt} ms`;
+                return;
+            }
+
+            // Decode received data
+            let d = dataText.split(';');
+            receivedSpeed = Number(d[0]);
+            remainingDistance = Number(d[1]);
+            remainingDistanceOriginal = remainingDistance;
+
+            // Acceleration rate
+            // calculate speed change
+            {
+                let now = Date.now()
+                let deleteNodesBefore = now - 10000;
+
+                let speedNode = new ListNode(now, receivedSpeed);
+
+                if (first == null) {
+                    first = speedNode;
+                } else {
+                    last.next = speedNode;
+                }
+                last = speedNode;
+
+                function calcAcceleration(duration) {
+                    let it = first
+                    /** @type {ListNode} */
+                    let last = null
+                    while (it.at <= now - duration && it.next) {
+                        last = it
+                        it = last.next
+                    }
+
+                    if (last) {
+                        return (receivedSpeed - last.spd) / ((now - last.at) / 1000)
+                    } else {
+                        return null
+                    }
+                }
+
+                while (first.at <= deleteNodesBefore && first.next) {
+                    let removed = first;
+                    first = removed.next;
+                }
+
+                let accelAverage = [calcAcceleration(2000), calcAcceleration(1000)].find(x => x !== null);
+
+                if (accelAverage !== undefined) {
+                    accelerationRate = accelAverage;
+                }
+            }
+
+            // Why this software exists
+            bestDistanceM = calcDistanceForSpeed(DECEL_RATE, receivedSpeed / 3.6);
+            bestSpeedKph = calcSpeedForDistance(DECEL_RATE, remainingDistance) * 3.6;
+
+            // Time difference seconds in decel curve: distance difference / velocity
+            timeDiffSeconds = (remainingDistance - bestDistanceM) / (smoothSpeed / 3.6);
+            let apTimeDiffSeconds = /*Math.max(0.0, remainingDistance - bestDistanceM) / (smoothSpeed / 3.6)*/timeDiffSeconds;
+
+            historyModule.process(Date.now(), receivedSpeed / 3.6);
+
+            // process autopilot
+            if (autopilotEngaged) {
+                if (receivedSpeed < 1) {
+                    if (apSpeedZero == -1) apSpeedZero = Date.now();
+                    if (Date.now() - apSpeedZero > 3000) {
+                        APdisengage();
+                        apSpeedZero = -1;
+                    }
+                } else apSpeedZero = -1;
+
+                if (receivedSpeed < 8) {
+                    setApBrake(apMaxEffort);
+                } else {
+                    if (receivedSpeed < 20) {
+                        if (apTimeDiffSeconds < -3) {
+                            setApBrake(apMaxEffort);
+                        } else if (apTimeDiffSeconds <= -0.8) {
+                            setApBrake(apMaxEffort - 1);
+                        } else if (apTimeDiffSeconds <= -0.5) {
+                            setApBrake(apStandardEffort + 2);
+                        } else if (apTimeDiffSeconds <= -0.2) {
+                            setApBrake(apStandardEffort + 1);
+                        } else if (apTimeDiffSeconds <= 0.2) {
+                            setApBrake(apStandardEffort);
+                        } else if (apTimeDiffSeconds <= 0.5) {
+                            setApBrake(apStandardEffort - 1);
+                        } else if (apTimeDiffSeconds <= 0.8) {
+                            setApBrake(apStandardEffort - 2);
+                        } else if (apTimeDiffSeconds <= 3) {
+                            setApBrake(3);
+                        } else if (apTimeDiffSeconds <= 3) {
+                            setApBrake(1);
+                        }
+                    } else if (receivedSpeed < 40) {
+                        if (apTimeDiffSeconds < -2) {
+                            setApBrake(apMaxEffort);
+                        } else if (apTimeDiffSeconds <= -0.5) {
+                            setApBrake(Math.min(apStandardEffort + 3, apMaxEffort));
+                        } else if (apTimeDiffSeconds <= -0.2) {
+                            setApBrake(apStandardEffort + 1);
+                        } else if (apTimeDiffSeconds <= 0.2) {
+                            setApBrake(apStandardEffort);
+                        } else if (apTimeDiffSeconds <= 0.4) {
+                            setApBrake(apStandardEffort - 1);
+                        } else if (apTimeDiffSeconds <= 0.8) {
+                            setApBrake(apStandardEffort - 2);
+                        } else if (apTimeDiffSeconds <= 3) {
+                            setApBrake(apStandardEffort - 3);
+                        } else if (apTimeDiffSeconds <= 5) {
+                            setApBrake(1);
+                        }
+                    } else {
+                        if (apTimeDiffSeconds < -3) {
+                            setApBrake(apMaxEffort);
+                        } else if (apTimeDiffSeconds <= -1.5) {
+                            setApBrake(apStandardEffort + 2);
+                        } else if (apTimeDiffSeconds <= -0.3) {
+                            setApBrake(apStandardEffort + 1);
+                        } else if (apTimeDiffSeconds <= 0.3) {
+                            setApBrake(apStandardEffort);
+                        } else if (apTimeDiffSeconds <= 1) {
+                            setApBrake(apStandardEffort - 1);
+                        } else if (apTimeDiffSeconds <= 2) {
+                            setApBrake(apStandardEffort - 2);
+                        } else if (apTimeDiffSeconds <= 5) {
+                            setApBrake(1);
+                        }
+                    }
+                }
+            }
+
+            lastDataUpdate = Date.now();
+
+            if (!dataKillSwitch) {
+                sendPacket("")
+            }
+        }
+
+        function updateSounds() {
+            if (receivedSpeed > 10) {
+                // Upcoming limit sound effect
+                if (timeDiffSeconds < 10) {
+                    if (!isDecelActiveNow) {
+                        isDecelActiveNow = true;
+                        audioEngine.etcsWarning();
+                    }
+                } else {
+                    if (isDecelActiveNow) {
+                        isDecelActiveNow = false;
+                    }
+                }
+            }
+
+            if (!isWarnSoundActiveNow && receivedSpeed > 10) {
+                isWarnSoundActiveNow = true;
+                audioEngine.etcsWarning();
+                warnSoundNeededSince = Date.now();
+            } else if (receivedSpeed <= 10) {
+                warnSoundNeededSince = 0;
+                isWarnSoundActiveNow = false;
+            }
+
+            // Overspeed warning effect + Departing ETCS sound effect
+            if (Date.now() - warnSoundNeededSince > 2000 && warnSoundNeededSince != 0) {
+                let playAfterMs = Math.max(0, nextSoundPlay - Date.now());
+                if (receivedSpeed - bestSpeedKph > 10) {
+                    if (nextSoundPlay - 200 < Date.now() && !overrideWarningSounds) {
+                        nextSoundPlay = Date.now() + playAfterMs + audioEngine.etcsOverspeed(Math.max(0, playAfterMs)) + 0; // delay between sounds
+                    }
+                }
+                else if (receivedSpeed - bestSpeedKph > 3) {
+                    if (!isOverspeedActiveNow && nextSoundPlay - 200 < Date.now() && !overrideWarningSounds) {
+                        nextSoundPlay = Date.now() + playAfterMs + audioEngine.etcsOverspeedRepeat(2, Math.max(0, playAfterMs));
+                        isOverspeedActiveNow = true;
+                    }
+                } else if (receivedSpeed - bestSpeedKph < 1) {
+                    if (isOverspeedActiveNow)
+                        overrideWarningSounds = false;
+                    isOverspeedActiveNow = false;
+                }
+            }
+        }
+
+        function updateDisplay() {
+            // Calculate smooth speed
+            if (receivedSpeed > 0) {
+                smoothSpeed = lastSpeed + (currentSpeed - lastSpeed) * Math.min(Math.max(0, Date.now() - currentSpeedAt), currentSpeedAt - lastSpeedAt) / (currentSpeedAt - lastSpeedAt);
+                if (currentSpeed != receivedSpeed) {
+                    lastSpeed = smoothSpeed;
+                    currentSpeed = receivedSpeed;
+                    lastSpeedAt = currentSpeedAt;
+                    currentSpeedAt = Date.now();
+                }
+            } else {
+                lastSpeed = 0;
+                currentSpeed = 0;
+                smoothSpeed = 0;
+            }
+
+            // // calculate smooth distance
+            // if (remainingDistance > 0) {
+            //     let timeElapsed = (Date.now() - lastDisplayUpdate) / 1000;
+            //     lastDisplayUpdate = Date.now();
+            //     let distanceElapsed = timeElapsed * currentSpeed / 3.6;
+            //     remainingDistance = Math.max(0, remainingDistance - distanceElapsed);
+            // }
+
+            updateSounds();
+
+            // text to print
+            let output = "";
+
+            // print simple data
+            if (receivedSpeed < 10) {
+                speedBox.textContent = receivedSpeed.toFixed(1);
+            } else {
+                speedBox.textContent = receivedSpeed.toFixed(0);
+            }
+
+            output += Math.floor(remainingDistance) + "m\n";
+
+            // only calculate speed if train is faster than 10km/h
+            if (receivedSpeed > 10) {
+                // Timing display
+                {
+                    let percentDifference = Math.pow(Math.abs(timeDiffSeconds) * 70, 0.6);
+                    if (timeDiffSeconds < 0) percentDifference *= -1;
+                    let pos = Math.max(0, Math.min(110, (50 + percentDifference)))
+
+                    output += Math.floor(timeDiffSeconds) + "s\n";
+
+                    currentGauge.style.top = pos + "%";
+                }
+
+                // Acceleration rate display
+                {
+                    let percentDifference = (-accelerationRate - (DECEL_RATE * 3.6)) * 20;
+                    let pos = Math.max(0, Math.min(110, (50 + percentDifference)))
+
+                    if (autopilotEngaged && lastApCmd !== -1) {
+                        accBox.textContent = `AP BRK ${lastApCmd}\n`;
+                    } else {
+                        accBox.textContent = accelerationRate.toFixed(1) + "km/h\u22C5s\n";
+                    }
+
+                    if (Math.abs(timeDiffSeconds) < 10) {
+                        acceleration.style.top = pos + "%";
+                        acceleration.style.display = "block";
+                    } else {
+                        acceleration.style.display = "none";
+                    }
+                }
+
+                currentGauge.style.display = "block";
+            } else {
+                currentGauge.style.top = "110%";
+                currentGauge.style.display = "none";
+                acceleration.style.display = "none";
+
+                warnSoundNeededSince = 0;
+
+                if (autopilotEngaged && lastApCmd !== -1) {
+                    accBox.textContent = `AP BRK ${lastApCmd}\n`;
+                } else {
+                    accBox.textContent = "";
+                }
+            }
+
+            speedRingManager.drawCurrent(smoothSpeed, remainingDistance, timeDiffSeconds);
+            dataBox.textContent = output;
+
+            requestAnimationFrame(updateDisplay)
+        }
+
+        let onConnectionClosed = [];
+
+        function startWsInterval() {
+            // sendPacket(""); // request update
+            // let intervalId = setInterval(() => sendPacket(""), 50);
+            sendPacket("")
+
+            ws.onerror = () => {
+                // clearInterval(intervalId);
+                for (let func of onConnectionClosed) {
+                    func();
+                }
+
+                // after all current drawing is finished
+                setTimeout(() => {
+                    document.body.style.background = "red"
+                    dataBox.style.color = "white"
+                    dataBox.textContent = "Disconnected from the server.\nPlease refresh the page when server is up!";
+
+                    // clear every canvas in #speedContainer element
+                    for (let canvas of document.querySelectorAll("#speedContainer canvas")) {
+                        canvas.remove();
+                    }
+                }, 500);
+
+                // clearInterval(intervalId)
+                dataKillSwitch = true;
+            }
+
+            ws.onclose = ws.onerror;
+        }
+
+        // ************************ UI BUTTONS ************************
+
+        // OCR RESET BUTTON
+        document.getElementById("ocrReset").addEventListener("click", () => {
+            audioEngine.buttonPressSound();
+            overrideWarningSounds = false;
+            sendPacket("reset");
+        })
+
+        // WARN OVERRIDE BUTTON
+        document.getElementById("warnOverrideBtn").addEventListener("click", function (ev) {
+            audioEngine.buttonPressSound();
+
+            /** @type {HTMLDivElement} */
+            let btn = this;
+            btn.classList.add("disabled");
+            overrideWarningSounds = true;
+            let id = setInterval(() => {
+                if (!overrideWarningSounds) {
+                    btn.classList.remove("disabled");
+                    clearInterval(id);
+                }
+            }, 100);
+        });
+
+        // AUTOPILOT BUTTON
+        document.getElementById("autopilotBtn").addEventListener("click", function (ev) {
+            audioEngine.buttonPressSound();
+
+            if (autopilotEngaged) {
+                APdisengage();
+            } else {
+                APengage();
+                /** @type {HTMLDivElement} */
+                let btn = this;
+                btn.classList.add("disabled");
+                let id = setInterval(() => {
+                    if (!autopilotEngaged) {
+                        btn.classList.remove("disabled");
+                        clearInterval(id);
+                    }
+                }, 100);
+            }
+        });
+
+        // PREFERENCES
+        document.getElementById("decelSet").children[0].onclick = () => {
+            audioEngine.buttonPressSound();
+            setDecelRateIndex(getDecelRateIndex() - 1)
+        }
+        document.getElementById("decelSet").children[1].onclick = () => {
+            audioEngine.buttonPressSound();
+            setDecelRateIndex(getDecelRateIndex() + 1)
+        }
+        document.getElementById("spdSet").children[0].onclick = () => {
+            audioEngine.buttonPressSound();
+            setSpeedPresetIndex(getSpeedPresetIndex() - 1)
+            speedRingManager.drawBase();
+        }
+        document.getElementById("spdSet").children[1].onclick = () => {
+            audioEngine.buttonPressSound();
+            setSpeedPresetIndex(getSpeedPresetIndex() + 1)
+            speedRingManager.drawBase();
+        }
+
+        // START SCREEN REACTION & INITIALIZATION OF SOFTWARE
+
+        document.querySelector("#initialDisplay > *").onclick = function (ev) {
+            ev.preventDefault();
+        }
+
+        document.getElementById("initialDisplay").onclick = function (ev) {
+            /** @type {HTMLDivElement} */
+            let elem = document.getElementById("initialDisplay");
+            audioEngine.welcomeSound(500);
+            elem.remove();
+
+            // let iid = setInterval(() => {
+            //     updateDisplay();
+            // }, 50);
+            onConnectionClosed.push(() => {
+                // clearInterval(iid);
+                drawKillSwitch = true;
+            })
+            requestAnimationFrame(updateDisplay) // start loop
+
+            if (ws.readyState === 1) {
+                startWsInterval();
+            }
+        }
+
+        // ************************ Network monitoring ************************
+        function sendPacket(data) {
+            ws.send(data);
+        }
+
+        // ************************ Utility ************************
+        /**
+         * @param {number} decelRate
+         * @param {number} speed
+         */
+        function calcDistanceForSpeed(decelRate, speed) {
+            return Math.pow(speed, 2) / (2 * decelRate);
+        }
+
+        /**
+         * @param {number} decelRate
+         * @param {number} meters
+         */
+        function calcSpeedForDistance(decelRate, meters) {
+            return Math.pow(2 * decelRate * meters, 0.5);
+        }
+
+        // ************************ Debugging ************************
+        const TESTING = false;
+        if (TESTING) {
+            let spd = 0;
+            let dist = 300;
+            let maxV = 100;
+            let acceleration = 5;
+
+            let id = setInterval(() => {
+                ws.onmessage({
+                    data: `${spd += acceleration / 10};${dist}`
+                })
+                if (spd > maxV) {
+                    spd = maxV;
+                }
+                dist -= (spd / 3.6) * 0.1;
+                if (calcDistanceForSpeed(DECEL_RATE, spd / 3.6) >= dist) {
+                    spd = Math.min(spd, calcSpeedForDistance(DECEL_RATE, dist) * 3.6 * 1.3);
+                }
+                if (dist < 0) dist = 0;
+                if (dist <= 0 && spd <= 0)
+                    clearInterval(id);
+            }, 100)
+        }
+    </script>
+
+</body>
+
+</html>
