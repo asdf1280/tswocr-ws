@@ -30,8 +30,8 @@ namespace TSWOCR_WS {
         protected override void OnMessage(MessageEventArgs e) {
             if (e.Data == "reset") {
                 ResetRequested(null, null);
-            } else if (Regex.IsMatch(e.Data, @"ap(-1|[\d]+)")) {
-                var m = Regex.Match(e.Data, @"ap(-1|[\d]+)");
+            } else if (Regex.IsMatch(e.Data, @"ap(-|[\d]+)")) {
+                var m = Regex.Match(e.Data, @"ap(-|[\d]+)");
                 var brake = int.Parse(m.Groups[1].Value);
                 new Thread(() => {
                     try {
@@ -73,22 +73,18 @@ namespace TSWOCR_WS {
     }
     class Program {
         static long lastTick;
+        static TesseractEngine CreateEngine(string whitelist) {
+            TesseractEngine engine = new TesseractEngine("tessdata", "eng");
+            engine.SetVariable("tessedit_char_whitelist", whitelist);
+            engine.DefaultPageSegMode = PageSegMode.SingleLine;
+            engine.SetVariable("debug_file", "NUL");
+            return engine;
+        }
         static void Main(string[] args) {
-            TesseractEngine ocr = new TesseractEngine("tessdata", "eng");
-            ocr.SetVariable("tessedit_char_whitelist", "0123456789g.,km KMH");
-            ocr.DefaultPageSegMode = PageSegMode.SingleLine;
-            ocr.SetVariable("debug_file", "NUL");
-            RawDataProcessor processor = new RawDataProcessor(ocr);
+            var ocr1 = CreateEngine("0123456789.km KMH");
+            var ocr2 = CreateEngine("0123456789.km KMH");
 
-            new Thread(() => {
-                while (true) {
-                    Console.ReadLine();
-                    Console.WriteLine("Reset the speed and distance");
-                    processor.Reset();
-                }
-            }) {
-                IsBackground = true
-            }.Start();
+            RawDataProcessor processor = new RawDataProcessor(ocr1 ,ocr2);
 
             WebsocketProcessor.ResetRequested += (sender, e) => {
                 Console.WriteLine("Reset the speed and distance");
@@ -134,11 +130,30 @@ namespace TSWOCR_WS {
             };
 
             sv.Start();
-            while (true) {
-                var prevTick = lastTick;
-                lastTick = DateTime.Now.Ticks;
 
-                processor.ReadTrainState(out double speed, out double distance, out double spdLimDist, out double spdLimVal, out int signal, out double signalDist);
+            var delay = 0;
+
+            // Train Supervision Reading
+            new Thread(() => {
+                while (true) {
+                    processor.ReadTrainSupervision(out double spdLimDist, out double spdLimVal, out int signal, out double signalDist);
+
+                    WebsocketProcessor.slv = spdLimVal;
+                    WebsocketProcessor.sld = spdLimDist;
+                    WebsocketProcessor.sgs = signal;
+                    WebsocketProcessor.sgd = signalDist;
+
+                    Console.WriteLine("SUP " + spdLimVal + " in " + spdLimDist + " / " + signal + "s in " + signalDist);
+
+                    Thread.Sleep(delay);
+                }
+            }) {
+                IsBackground = false
+            }.Start();
+
+            // Train Position Reading
+            while (true) {
+                processor.ReadTrainState(out double speed, out double distance);
 
                 var mpsSpeed = speed / 3.6;
 
@@ -146,37 +161,39 @@ namespace TSWOCR_WS {
 
                 double meters = distance;
 
-                Console.WriteLine(speed + " -> " + Math.Round(distance) + " / " + spdLimVal + " in " + spdLimDist + " / " + signal + "s in " + signalDist);
-
-                WebsocketProcessor.slv = spdLimVal;
-                WebsocketProcessor.sld = spdLimDist;
-                WebsocketProcessor.sgs = signal;
-                WebsocketProcessor.sgd = signalDist;
+                Console.WriteLine("POS " + speed + " -> " + Math.Round(distance));
 
                 if (speed == 0 && distance == 0) { // stopped
-                    Thread.Sleep(1000);
+                    delay = 1000;
                     WebsocketProcessor.speed = 0;
                     WebsocketProcessor.distance = -1;
+
+                    Thread.Sleep(1000);
+                    continue;
+                } else {
+                    delay = 0;
                 }
 
                 if (/*speed < 10 || */distance == 0) {
                     WebsocketProcessor.speed = 0;
                     WebsocketProcessor.distance = -1;
-                    continue;
                 }
 
-                Thread.Sleep(50);
                 WebsocketProcessor.speed = speed;
                 WebsocketProcessor.distance = distance;
+
+                Thread.Sleep(delay);
             }
         }
 
     }
 
     class RawDataProcessor {
-        private TesseractEngine ocr;
-        public RawDataProcessor(TesseractEngine engine) {
-            this.ocr = engine;
+        private TesseractEngine posOCR;
+        private TesseractEngine supOCR;
+        public RawDataProcessor(TesseractEngine positionOcr, TesseractEngine supervisionOcr) {
+            posOCR = positionOcr;
+            supOCR = supervisionOcr;
         }
 
         private double prevSpeed = 0;
@@ -213,7 +230,7 @@ namespace TSWOCR_WS {
             lastKiloFactor = 1;
         }
 
-        public void ReadTrainState(out double speed, out double distance, out double spdLimDist, out double spdLimValue, out int signal, out double signalDist) {
+        public void ReadTrainState(out double speed, out double distance) {
             var currentTime = CurrentMilliseconds(); // in ms
             var callTimeGap = currentTime - lastDataCall;
 
@@ -306,31 +323,16 @@ namespace TSWOCR_WS {
                 finalDistance = 0;
             }
 
-            // Speed limit detection
-            var speedLimitDistanceData = OCRSpdLimDistanceAndIsKiloRead(0);
-            var speedLimitValueData = OCRSpdLimSpeedRead();
-            var speedLimitExistsData = OCRSpdLimExists();
+            // Data output
 
-            if (!speedLimitExistsData) {
-                spdLimDist = -1;
-                spdLimValue = -1;
-            } else {
-                if (speedLimitDistanceData != null) {
-                    var dd = speedLimitDistanceData.Value.Item1 * (speedLimitDistanceData.Value.Item2 ? 1000 : 1);
-                    //if (dd > 1000)
-                    spdLimDist = dd;
-                    //else
-                    //    spdLimDist = -1;
-                } else {
-                    spdLimDist = -1;
-                }
-                if (speedLimitValueData != null) {
-                    spdLimValue = speedLimitValueData.Value;
-                } else {
-                    spdLimValue = -1;
-                }
-            }
+            lastDataCall = currentTime;
+            prevSpeed = speed = finalSpeed;
+            prevDetectedDistance = memoryDistance;
+            distance = finalDistance;
+            anotherDist = distanceMeters ?? 0;
+        }
 
+        public void ReadTrainSupervision(out double spdLimDist, out double spdLimValue, out int signal, out double signalDist) {
             // Signal data detection
             var signalState = OCRGetSignalState();
             signal = signalState;
@@ -340,22 +342,40 @@ namespace TSWOCR_WS {
                 var signalDistanceData = OCRSpdLimDistanceAndIsKiloRead(-67);
                 if (signalDistanceData != null) {
                     var dd = signalDistanceData.Value.Item1 * (signalDistanceData.Value.Item2 ? 1000 : 1);
-                    //if (dd > 1000)
                     signalDist = dd;
-                    //else
-                    //    signalDist = -1;
                 } else {
                     signalDist = -1;
                 }
             }
 
-            // Data output
+            // Speed limit detection
+            var speedLimitOffset = -1;
 
-            lastDataCall = currentTime;
-            prevSpeed = speed = finalSpeed;
-            prevDetectedDistance = memoryDistance;
-            distance = finalDistance;
-            anotherDist = distanceMeters ?? 0;
+            // Speed limit appears at signal position if signal doesn't exist
+            if (signalState == -1 && OCRSpdLimExists(-67)) {
+                speedLimitOffset = -67;
+            } else if (OCRSpdLimExists()) {
+                speedLimitOffset = 0;
+            }
+
+            if (speedLimitOffset == -1) {
+                spdLimDist = -1;
+                spdLimValue = -1;
+            } else {
+                var speedLimitDistanceData = OCRSpdLimDistanceAndIsKiloRead(speedLimitOffset);
+                var speedLimitValueData = OCRSpdLimSpeedRead(speedLimitOffset);
+                if (speedLimitDistanceData != null) {
+                    var dd = speedLimitDistanceData.Value.Item1 * (speedLimitDistanceData.Value.Item2 ? 1000 : 1);
+                    spdLimDist = dd;
+                } else {
+                    spdLimDist = -1;
+                }
+                if (speedLimitValueData != null) {
+                    spdLimValue = speedLimitValueData.Value;
+                } else {
+                    spdLimValue = -1;
+                }
+            }
         }
 
         private bool ValidateDistance(double? rawMetersRemain, double currentV, long dataCallInterval, bool isKilo, double prevDist, double prevSpeed) {
@@ -397,27 +417,17 @@ namespace TSWOCR_WS {
                 }
                 for (var y = 0; y < bitmap.Height; y++) {
                     for (var x = 0; x < bitmap.Width; x++) {
-                        //if (ColorDist(bitmap.GetPixel(x, y), Color.White) < 50)
-                        //{
-                        //    bitmap.SetPixel(x, y, Color.Black);
-                        //}
-                        //else
-                        //{
-                        //    bitmap.SetPixel(x, y, Color.White);
-
-                        //}
                         Color inv = bitmap.GetPixel(x, y);
 
-                        if (inv.R < 150 && inv.G < 150 && inv.B < 150) {
+                        if (inv.R < 200 && inv.G < 200 && inv.B < 200) {
                             bitmap.SetPixel(x, y, Color.White);
                             continue;
                         }
 
-                        inv = Color.FromArgb(255, (255 - inv.R), (255 - inv.G), (255 - inv.B));
-                        bitmap.SetPixel(x, y, inv);
+                        bitmap.SetPixel(x, y, Color.FromArgb(inv.ToArgb() ^ 0xffffff));
                     }
                 }
-                var ocrResult = ocr.Process(bitmap);
+                var ocrResult = posOCR.Process(bitmap);
                 rawSpeed = ocrResult.GetText().Trim().Replace(",", ".").Replace(" ", "").Replace("?", "").Replace("o", "0").Replace("g", "9");
                 ocrResult.Dispose();
                 bitmap.Dispose();
@@ -452,25 +462,18 @@ namespace TSWOCR_WS {
                 }
                 for (var y = 0; y < bitmap.Height; y++) {
                     for (var x = 0; x < bitmap.Width; x++) {
-                        //if (ColorDist(bitmap.GetPixel(x, y), Color.White) < 50) {
-                        //    bitmap.SetPixel(x, y, Color.Black);
-                        //} else {
-                        //    bitmap.SetPixel(x, y, Color.White);
-
-                        //}
                         Color inv = bitmap.GetPixel(x, y);
 
-                        if (inv.R < 150 && inv.G < 150 && inv.B < 150) {
+                        if (inv.R < 230 && inv.G < 230 && inv.B < 230) {
                             bitmap.SetPixel(x, y, Color.White);
                             continue;
                         }
 
-                        inv = Color.FromArgb(255, (255 - inv.R), (255 - inv.G), (255 - inv.B));
-                        bitmap.SetPixel(x, y, inv);
+                        bitmap.SetPixel(x, y, Color.FromArgb(inv.ToArgb() ^ 0xffffff));
                     }
                 }
                 //newBitmap.Save("test.jpg", System.Drawing.Imaging.ImageFormat.Jpeg);
-                var ocrResult = ocr.Process(bitmap);
+                var ocrResult = posOCR.Process(bitmap);
                 rawDistance = ocrResult.GetText().Trim().Replace(" ", "").Replace(",", ".").Replace("o", "0").Replace("g", "9");
                 ocrResult.Dispose();
                 bitmap.Dispose();
@@ -492,7 +495,7 @@ namespace TSWOCR_WS {
 
 
         private (double, bool)? OCRSpdLimDistanceAndIsKiloRead(int yOffset) {
-            Rectangle spdLimDistanceBounds = new Rectangle(2235, 286 + yOffset, 105, 34);
+            Rectangle spdLimDistanceBounds = new Rectangle(2254, 286 + yOffset, 80, 34);
 
             string rawDistance;
             bool kilo;
@@ -505,20 +508,14 @@ namespace TSWOCR_WS {
                 }
                 for (var y = 0; y < bitmap.Height; y++) {
                     for (var x = 0; x < bitmap.Width; x++) {
-                        //if (ColorDist(bitmap.GetPixel(x, y), Color.White) < 50) {
-                        //    bitmap.SetPixel(x, y, Color.Black);
-                        //} else {
-                        //    bitmap.SetPixel(x, y, Color.White);
-                        //}
                         Color inv = bitmap.GetPixel(x, y);
 
-                        if (inv.R < 150 && inv.G < 150 && inv.B < 150) {
+                        if (inv.R < 230 && inv.G < 230 && inv.B < 230) {
                             bitmap.SetPixel(x, y, Color.White);
                             continue;
                         }
 
-                        inv = Color.FromArgb(255, (255 - inv.R), (255 - inv.G), (255 - inv.B));
-                        bitmap.SetPixel(x, y, inv);
+                        bitmap.SetPixel(x, y, Color.FromArgb(inv.ToArgb() ^ 0xffffff));
                     }
                 }
 
@@ -544,17 +541,10 @@ namespace TSWOCR_WS {
                     }
                 }
 
-                //var newBitmap = new Bitmap(spdLimDistanceBounds.Width * 5, spdLimDistanceBounds.Height * 5);
-                //var gr = Graphics.FromImage(newBitmap);
-                //gr.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
-                //gr.DrawImage(bitmap, 0, 0, newBitmap.Width, newBitmap.Height);
-                //newBitmap.Save("test.jpg", System.Drawing.Imaging.ImageFormat.Jpeg);
-                var ocrResult = ocr.Process(bitmap);
+                var ocrResult = supOCR.Process(bitmap);
                 rawDistance = ocrResult.GetText().Trim().Replace(" ", "").Replace(",", ".").Replace("o", "0").Replace("g", "9");
                 ocrResult.Dispose();
                 bitmap.Dispose();
-                //newBitmap.Dispose();
-
             }
 
             if (rawDistance.Length <= 0 || rawDistance.Contains("Empty")) {
@@ -575,8 +565,8 @@ namespace TSWOCR_WS {
             return (distance, kilo);
         }
 
-        private double? OCRSpdLimSpeedRead() {
-            Rectangle speedLimBounds = new Rectangle(2388, 274, 79, 36);
+        private double? OCRSpdLimSpeedRead(int yOffset = 0) {
+            Rectangle speedLimBounds = new Rectangle(2388, 274 + yOffset, 79, 36);
 
             string rawSpeed;
             double speed;
@@ -589,18 +579,17 @@ namespace TSWOCR_WS {
                     for (var x = 0; x < bitmap.Width; x++) {
                         Color inv = bitmap.GetPixel(x, y);
 
-                        if (inv.R < 150 && inv.G < 150 && inv.B < 150) {
+                        if (inv.R < 230 && inv.G < 230 && inv.B < 230) {
                             bitmap.SetPixel(x, y, Color.White);
                             continue;
                         }
 
-                        inv = Color.FromArgb(255, (255 - inv.R), (255 - inv.G), (255 - inv.B));
-                        bitmap.SetPixel(x, y, inv);
+                        bitmap.SetPixel(x, y, Color.FromArgb(inv.ToArgb() ^ 0xffffff));
                     }
                 }
 
                 //bitmap.Save("test.jpg", System.Drawing.Imaging.ImageFormat.Jpeg);
-                var ocrResult = ocr.Process(bitmap);
+                var ocrResult = supOCR.Process(bitmap);
                 rawSpeed = ocrResult.GetText().Trim().Replace(" ", "").Replace("o", "0").Replace("g", "9");
                 ocrResult.Dispose();
                 bitmap.Dispose();
@@ -619,8 +608,8 @@ namespace TSWOCR_WS {
             return speed;
         }
 
-        private bool OCRSpdLimExists() {
-            Rectangle speedLimBounds = new Rectangle(2384, 309, 76, 21);
+        private bool OCRSpdLimExists(int yOffset = 0) {
+            Rectangle speedLimBounds = new Rectangle(2384, 309 + yOffset, 76, 21);
 
             string rawRes;
 
@@ -631,19 +620,18 @@ namespace TSWOCR_WS {
                 for (var y = 0; y < bitmap.Height; y++) {
                     for (var x = 0; x < bitmap.Width; x++) {
                         Color inv = bitmap.GetPixel(x, y);
-
-                        if (inv.R < 150 && inv.G < 150 && inv.B < 150) {
+                        
+                        if (inv.R < 160 && inv.G < 160 && inv.B < 160) {
                             bitmap.SetPixel(x, y, Color.White);
                             continue;
                         }
 
-                        inv = Color.FromArgb(255, (255 - inv.R), (255 - inv.G), (255 - inv.B));
-                        bitmap.SetPixel(x, y, inv);
+                        bitmap.SetPixel(x, y, Color.FromArgb(inv.ToArgb() ^ 0xffffff));
                     }
                 }
 
                 //bitmap.Save("test.jpg", System.Drawing.Imaging.ImageFormat.Jpeg);
-                var ocrResult = ocr.Process(bitmap);
+                var ocrResult = supOCR.Process(bitmap);
                 rawRes = ocrResult.GetText().Trim().Replace(" ", "").Replace("o", "0").Replace("g", "9");
                 ocrResult.Dispose();
                 bitmap.Dispose();
@@ -658,30 +646,30 @@ namespace TSWOCR_WS {
         private readonly Color cR = Color.FromArgb(209, 33, 33);
 
         private int OCRGetSignalState() {
-            Rectangle bounds = new Rectangle(2397, 209, 57, 53);
+            Rectangle bounds = new Rectangle(2407, 231, 24, 19);
 
             using (Bitmap bitmap = new Bitmap(bounds.Width, bounds.Height)) {
                 using (Graphics g = Graphics.FromImage(bitmap)) {
                     g.CopyFromScreen(new Point(bounds.Left, bounds.Top), Point.Empty, bounds.Size);
                 }
 
-                bitmap.Save("test.jpg");
+                //bitmap.Save("test.jpg");
 
-                var c = bitmap.GetPixel(28, 44);
+                var c = bitmap.GetPixel(3, 16);
                 var dG = ColorDist(c, cG);
                 var dY = ColorDist(c, cY);
                 var dR = ColorDist(c, cR);
-                var isSignal = ColorDist(Color.White, bitmap.GetPixel(30, 25)) > 250;
+                var isSignal = ColorDist(Color.White, bitmap.GetPixel(19, 2)) > 160;
 
-                Console.WriteLine(dG + ", " + dY + ", " + dR + ", " + ColorDist(Color.White, bitmap.GetPixel(30, 25)));
+                Console.WriteLine(dG + ", " + dY + ", " + dR + ", " + ColorDist(Color.White, bitmap.GetPixel(19, 2)));
 
                 if (!isSignal) {
                     return -1;
-                } else if (dG < 150) {
+                } else if (dG < 80) {
                     return 0;
-                } else if (dY < 150) {
+                } else if (dY < 80) {
                     return 1;
-                } else if (dR < 150) {
+                } else if (dR < 80) {
                     return 2;
                 } else {
                     return -1;
