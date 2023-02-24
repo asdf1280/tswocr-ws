@@ -55,10 +55,11 @@ namespace TSWOCR_WS {
     }
     class Program {
         static long lastTick;
-        static TesseractEngine CreateEngine(string whitelist) {
-            TesseractEngine engine = new TesseractEngine("tessdata", "eng");
+        static TesseractEngine CreateEngine(string whitelist, string lang = "eng") {
+            TesseractEngine engine = new TesseractEngine("tessdata", lang, EngineMode.TesseractOnly);
             engine.SetVariable("tessedit_char_whitelist", whitelist);
-            engine.DefaultPageSegMode = PageSegMode.SingleLine;
+            engine.SetVariable("tessedit_ocr_engine_mode", "0");
+            engine.DefaultPageSegMode = PageSegMode.RawLine;
             engine.SetVariable("debug_file", "NUL");
             return engine;
         }
