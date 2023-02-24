@@ -33,20 +33,28 @@ namespace TSWOCR_WS {
                 ResetRequested(null, null);
             } else if (e.Data.StartsWith("ap")) {
                 // prepare socket first
-                try {
-                    if (autopilotSocket == null || !autopilotSocket.Connected) {
-                        autopilotSocket = new TcpClient("127.0.0.1", 4776);
-                        autopilotWriter = new BinaryWriter(autopilotSocket.GetStream());
-                    }
-                } catch {
-
-                }
-
                 var apCommand = e.Data.Substring(2);
 
+                var sendSuc = false;
                 if (Regex.IsMatch(apCommand, @"^?([ab])(\d+)$") || apCommand == "r") {
-                    Console.WriteLine(apCommand);
-                    autopilotWriter.Write(apCommand);
+                    do {
+                        try {
+                            if (autopilotSocket == null) throw new Exception();
+
+                            autopilotWriter.Write(apCommand);
+                            Console.WriteLine(apCommand);
+
+                            sendSuc = true;
+                        } catch {
+                            try {
+                                autopilotSocket = new TcpClient("127.0.0.1", 4776);
+                                autopilotWriter = new BinaryWriter(autopilotSocket.GetStream());
+                            } catch {
+                                // give up
+                                sendSuc = true;
+                            }
+                        }
+                    } while (!sendSuc);
                 }
             } else {
                 Send(speed + ";" + distance + ";" + sld + ";" + slv + ";" + sgs + ";" + sgd);
@@ -55,19 +63,16 @@ namespace TSWOCR_WS {
     }
     class Program {
         static long lastTick;
-        static TesseractEngine CreateEngine(string whitelist, string lang = "eng") {
-            TesseractEngine engine = new TesseractEngine("tessdata", lang, EngineMode.TesseractOnly);
+        public static TesseractEngine CreateEngine(string whitelist, string lang = "eng", PageSegMode psm = PageSegMode.SingleLine) {
+            TesseractEngine engine = new TesseractEngine("tessdata", lang);
             engine.SetVariable("tessedit_char_whitelist", whitelist);
             engine.SetVariable("tessedit_ocr_engine_mode", "0");
-            engine.DefaultPageSegMode = PageSegMode.RawLine;
+            engine.DefaultPageSegMode = psm;
             engine.SetVariable("debug_file", "NUL");
             return engine;
         }
         static void Main(string[] args) {
-            var ocr1 = CreateEngine("0123456789.km KMH");
-            var ocr2 = CreateEngine("0123456789.km KMH");
-
-            RawDataProcessor processor = new RawDataProcessor(ocr1, ocr2);
+            RawDataProcessor processor = new RawDataProcessor();
 
             WebsocketProcessor.ResetRequested += (sender, e) => {
                 Console.WriteLine("Reset the speed and distance");
@@ -172,11 +177,15 @@ namespace TSWOCR_WS {
     }
 
     class RawDataProcessor {
-        private TesseractEngine posOCR;
-        private TesseractEngine supOCR;
-        public RawDataProcessor(TesseractEngine positionOcr, TesseractEngine supervisionOcr) {
-            posOCR = positionOcr;
-            supOCR = supervisionOcr;
+        private TesseractEngine stationOCR;
+        private TesseractEngine speedOCR;
+        private TesseractEngine planOCR;
+        private TesseractEngine kmhOCR;
+        public RawDataProcessor() {
+            stationOCR = Program.CreateEngine("0123456789.km", "deu", PageSegMode.SingleLine);
+            speedOCR = Program.CreateEngine("0123456789.", "deu", PageSegMode.SparseText);
+            planOCR = Program.CreateEngine("0123456789.km", "deu", PageSegMode.SingleLine);
+            kmhOCR = Program.CreateEngine("KMHkm/h", "deu", PageSegMode.SingleLine);
         }
 
         private double prevSpeed = 0;
@@ -389,7 +398,7 @@ namespace TSWOCR_WS {
 
         private double? OCRSpeedRead() {
             //Rectangle speedBounds = new Rectangle(2070, 1235, 120, 40);
-            Rectangle speedBounds = new Rectangle(2021, 1210, 131, 49);
+            Rectangle speedBounds = new Rectangle(2030, 1197, 116, 70);
 
             string rawSpeed;
             double speed;
@@ -402,7 +411,7 @@ namespace TSWOCR_WS {
                     for (var x = 0; x < bitmap.Width; x++) {
                         Color inv = bitmap.GetPixel(x, y);
 
-                        if (inv.R < 200 && inv.G < 200 && inv.B < 200) {
+                        if (inv.R < 230 && inv.G < 230 && inv.B < 230) {
                             bitmap.SetPixel(x, y, Color.White);
                             continue;
                         }
@@ -410,7 +419,8 @@ namespace TSWOCR_WS {
                         bitmap.SetPixel(x, y, Color.FromArgb(inv.ToArgb() ^ 0xffffff));
                     }
                 }
-                var ocrResult = posOCR.Process(bitmap);
+                //bitmap.Save("speed.png");
+                var ocrResult = speedOCR.Process(bitmap);
                 rawSpeed = ocrResult.GetText().Trim().Replace(",", ".").Replace(" ", "").Replace("?", "").Replace("o", "0").Replace("g", "9");
                 ocrResult.Dispose();
                 bitmap.Dispose();
@@ -433,7 +443,7 @@ namespace TSWOCR_WS {
         }
 
         private (double, bool)? OCRDistanceAndIsKiloRead() {
-            Rectangle distanceBounds = new Rectangle(370, 143, 90, 39);
+            Rectangle distanceBounds = new Rectangle(365, 140, 115, 47);
 
             string rawDistance;
             bool kilo;
@@ -447,7 +457,12 @@ namespace TSWOCR_WS {
                     for (var x = 0; x < bitmap.Width; x++) {
                         Color inv = bitmap.GetPixel(x, y);
 
-                        if (inv.R < 230 && inv.G < 230 && inv.B < 230) {
+                        if (inv.R < 170 && inv.G < 170 && inv.B < 170) {
+                            bitmap.SetPixel(x, y, Color.White);
+                            continue;
+                        }
+                        
+                        if(y > x * 1.4 + 19) {
                             bitmap.SetPixel(x, y, Color.White);
                             continue;
                         }
@@ -456,7 +471,7 @@ namespace TSWOCR_WS {
                     }
                 }
                 //newBitmap.Save("test.jpg", System.Drawing.Imaging.ImageFormat.Jpeg);
-                var ocrResult = posOCR.Process(bitmap);
+                var ocrResult = stationOCR.Process(bitmap);
                 rawDistance = ocrResult.GetText().Trim().Replace(" ", "").Replace(",", ".").Replace("o", "0").Replace("g", "9");
                 ocrResult.Dispose();
                 bitmap.Dispose();
@@ -478,7 +493,7 @@ namespace TSWOCR_WS {
 
 
         private (double, bool)? OCRSpdLimDistanceAndIsKiloRead(int yOffset) {
-            Rectangle spdLimDistanceBounds = new Rectangle(2254, 286 + yOffset, 80, 34);
+            Rectangle spdLimDistanceBounds = new Rectangle(2234, 286 + yOffset, 100, 34);
 
             string rawDistance;
             bool kilo;
@@ -489,11 +504,12 @@ namespace TSWOCR_WS {
                 using (Graphics g = Graphics.FromImage(bitmap)) {
                     g.CopyFromScreen(new Point(spdLimDistanceBounds.Left, spdLimDistanceBounds.Top), Point.Empty, spdLimDistanceBounds.Size);
                 }
-                for (var y = 0; y < bitmap.Height; y++) {
-                    for (var x = 0; x < bitmap.Width; x++) {
+                for (var x = 0; x < bitmap.Width; x++) {
+                    int colorTolerance = (x * -50 / bitmap.Width) + 240;
+                    for (var y = 0; y < bitmap.Height; y++) {
                         Color inv = bitmap.GetPixel(x, y);
 
-                        if (inv.R < 230 && inv.G < 230 && inv.B < 230) {
+                        if (inv.R < colorTolerance && inv.G < colorTolerance && inv.B < colorTolerance) {
                             bitmap.SetPixel(x, y, Color.White);
                             continue;
                         }
@@ -524,7 +540,8 @@ namespace TSWOCR_WS {
                     }
                 }
 
-                var ocrResult = supOCR.Process(bitmap);
+                //bitmap.Save("test.png", System.Drawing.Imaging.ImageFormat.Png);
+                var ocrResult = planOCR.Process(bitmap);
                 rawDistance = ocrResult.GetText().Trim().Replace(" ", "").Replace(",", ".").Replace("o", "0").Replace("g", "9");
                 ocrResult.Dispose();
                 bitmap.Dispose();
@@ -571,8 +588,8 @@ namespace TSWOCR_WS {
                     }
                 }
 
-                //bitmap.Save("test.jpg", System.Drawing.Imaging.ImageFormat.Jpeg);
-                var ocrResult = supOCR.Process(bitmap);
+                // bitmap.Save("test.jpg", System.Drawing.Imaging.ImageFormat.Jpeg);
+                var ocrResult = planOCR.Process(bitmap);
                 rawSpeed = ocrResult.GetText().Trim().Replace(" ", "").Replace("o", "0").Replace("g", "9");
                 ocrResult.Dispose();
                 bitmap.Dispose();
@@ -613,8 +630,8 @@ namespace TSWOCR_WS {
                     }
                 }
 
-                //bitmap.Save("test.jpg", System.Drawing.Imaging.ImageFormat.Jpeg);
-                var ocrResult = supOCR.Process(bitmap);
+                //bitmap.Save("test.png");
+                var ocrResult = kmhOCR.Process(bitmap);
                 rawRes = ocrResult.GetText().Trim().Replace(" ", "").Replace("o", "0").Replace("g", "9");
                 ocrResult.Dispose();
                 bitmap.Dispose();
