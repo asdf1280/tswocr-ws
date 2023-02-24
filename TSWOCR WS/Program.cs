@@ -19,7 +19,8 @@ namespace TSWOCR_WS {
         public static int sgs = 0;
         public static double sgd = 0;
 
-        private static TcpClient cl = null;
+        private static TcpClient autopilotSocket = null;
+        private static BinaryWriter autopilotWriter = null;
 
         public static event EventHandler ResetRequested;
 
@@ -30,45 +31,26 @@ namespace TSWOCR_WS {
         protected override void OnMessage(MessageEventArgs e) {
             if (e.Data == "reset") {
                 ResetRequested(null, null);
-            } else if (Regex.IsMatch(e.Data, @"ap(-|[\d]+)")) {
-                var m = Regex.Match(e.Data, @"ap(-|[\d]+)");
-                var brake = int.Parse(m.Groups[1].Value);
-                new Thread(() => {
-                    try {
-                        if (cl == null && brake == -1) return;
-                        if (cl == null || !cl.Connected) {
-                            cl = new TcpClient("127.0.0.1", 4776);
-                        }
-                        BinaryWriter bw = new BinaryWriter(cl.GetStream());
-                        bw.Write(brake);
-                        bw.Flush();
-
-                        if (brake == -1) {
-                            bw.Write(-2);
-                            bw.Flush();
-                            cl.Close();
-                            cl = null;
-                        } else {
-                            bw.Dispose();
-                        }
-                    } catch {
-
+            } else if (e.Data.StartsWith("ap")) {
+                // prepare socket first
+                try {
+                    if (autopilotSocket == null || !autopilotSocket.Connected) {
+                        autopilotSocket = new TcpClient("127.0.0.1", 4776);
+                        autopilotWriter = new BinaryWriter(autopilotSocket.GetStream());
                     }
-                    //catch {
+                } catch {
 
-                    //}
-                }).Start();
-            } else
-                //new Thread(() =>
-                //{
-                //    var end = DateTime.Now.Ticks + (2000 * TimeSpan.TicksPerMillisecond);
-                //    while(DateTime.Now.Ticks < end && this.State == WebSocketState.Open)
-                //    {
-                //        Send(speed + ";" + distance);
-                //        Thread.Sleep(50);
-                //    }
-                //}).Start();
+                }
+
+                var apCommand = e.Data.Substring(2);
+
+                if (Regex.IsMatch(apCommand, @"^?([ab])(\d+)$") || apCommand == "r") {
+                    Console.WriteLine(apCommand);
+                    autopilotWriter.Write(apCommand);
+                }
+            } else {
                 Send(speed + ";" + distance + ";" + sld + ";" + slv + ";" + sgs + ";" + sgd);
+            }
         }
     }
     class Program {
@@ -84,7 +66,7 @@ namespace TSWOCR_WS {
             var ocr1 = CreateEngine("0123456789.km KMH");
             var ocr2 = CreateEngine("0123456789.km KMH");
 
-            RawDataProcessor processor = new RawDataProcessor(ocr1 ,ocr2);
+            RawDataProcessor processor = new RawDataProcessor(ocr1, ocr2);
 
             WebsocketProcessor.ResetRequested += (sender, e) => {
                 Console.WriteLine("Reset the speed and distance");
@@ -620,7 +602,7 @@ namespace TSWOCR_WS {
                 for (var y = 0; y < bitmap.Height; y++) {
                     for (var x = 0; x < bitmap.Width; x++) {
                         Color inv = bitmap.GetPixel(x, y);
-                        
+
                         if (inv.R < 160 && inv.G < 160 && inv.B < 160) {
                             bitmap.SetPixel(x, y, Color.White);
                             continue;
