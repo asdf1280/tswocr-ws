@@ -36,26 +36,24 @@ namespace TSWOCR_WS {
                 var apCommand = e.Data.Substring(2);
 
                 var sendSuc = false;
-                if (Regex.IsMatch(apCommand, @"^?([ab])(\d+)$") || apCommand == "r") {
-                    do {
+                do {
+                    try {
+                        if (autopilotSocket == null) throw new Exception();
+
+                        autopilotWriter.Write(apCommand);
+                        Console.WriteLine(apCommand);
+
+                        sendSuc = true;
+                    } catch {
                         try {
-                            if (autopilotSocket == null) throw new Exception();
-
-                            autopilotWriter.Write(apCommand);
-                            Console.WriteLine(apCommand);
-
-                            sendSuc = true;
+                            autopilotSocket = new TcpClient("127.0.0.1", 4776);
+                            autopilotWriter = new BinaryWriter(autopilotSocket.GetStream());
                         } catch {
-                            try {
-                                autopilotSocket = new TcpClient("127.0.0.1", 4776);
-                                autopilotWriter = new BinaryWriter(autopilotSocket.GetStream());
-                            } catch {
-                                // give up
-                                sendSuc = true;
-                            }
+                            // give up
+                            sendSuc = true;
                         }
-                    } while (!sendSuc);
-                }
+                    }
+                } while (!sendSuc);
             } else {
                 Send(speed + ";" + distance + ";" + sld + ";" + slv + ";" + sgs + ";" + sgd);
             }
@@ -461,8 +459,8 @@ namespace TSWOCR_WS {
                             bitmap.SetPixel(x, y, Color.White);
                             continue;
                         }
-                        
-                        if(y > x * 1.4 + 19) {
+
+                        if (y > x * 1.4 + 19) {
                             bitmap.SetPixel(x, y, Color.White);
                             continue;
                         }
