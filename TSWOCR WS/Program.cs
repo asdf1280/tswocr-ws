@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Drawing;
+using System.Drawing.Text;
 using System.IO;
 using System.Net.Sockets;
 using System.Text;
@@ -9,11 +10,13 @@ using Tesseract;
 using WebSocketSharp;
 using WebSocketSharp.Net;
 using WebSocketSharp.Server;
+using static System.Net.Mime.MediaTypeNames;
 
 namespace TSWOCR_WS {
     class WebsocketProcessor : WebSocketBehavior {
         public static double speed = 0;
         public static double distance = 0;
+        public static double gradient = 0;
         public static double sld = 0;
         public static double slv = 0;
         public static int sgs = 0;
@@ -56,7 +59,7 @@ namespace TSWOCR_WS {
                     }
                 } while (!sendSuc);
             } else {
-                Send(speed + ";" + distance + ";" + sld + ";" + slv + ";" + sgs + ";" + sgd);
+                Send(speed + ";" + distance + ";" + gradient + ";" + sld + ";" + slv + ";" + sgs + ";" + sgd);
                 if (stationState >= 0) {
                     Send("station;" + stationState);
                 }
@@ -144,7 +147,7 @@ namespace TSWOCR_WS {
 
             // Train Position Reading
             while (true) {
-                processor.ReadTrainState(out double speed, out double distance);
+                processor.ReadTrainState(out double speed, out double distance, out int gradient);
 
                 var mpsSpeed = speed / 3.6;
 
@@ -160,6 +163,8 @@ namespace TSWOCR_WS {
                 } else {
                     WebsocketProcessor.stationState = -1;
                 }
+
+                WebsocketProcessor.gradient = gradient;
 
                 if (speed == 0 && distance == 0) { // stopped
                     delay = 1000;
@@ -192,12 +197,14 @@ namespace TSWOCR_WS {
         private TesseractEngine planOCR;
         private TesseractEngine kmhOCR;
         private TesseractEngine gameMissionOCR;
+        private TesseractEngine digitalOCR;
         public RawDataProcessor() {
             stationOCR = Program.CreateEngine("0123456789.km", "deu", PageSegMode.SingleLine);
             speedOCR = Program.CreateEngine("0123456789.", "deu", PageSegMode.SparseText);
             planOCR = Program.CreateEngine("0123456789.km", "deu", PageSegMode.SingleLine);
             kmhOCR = Program.CreateEngine("KMHkm/h", "deu", PageSegMode.SingleLine);
             gameMissionOCR = Program.CreateEngine("", "eng", PageSegMode.SingleLine);
+            digitalOCR = Program.CreateEngine("0123456789.%", "deu", PageSegMode.SingleWord);
         }
 
         private double prevSpeed = 0;
@@ -234,7 +241,7 @@ namespace TSWOCR_WS {
             lastKiloFactor = 1;
         }
 
-        public void ReadTrainState(out double speed, out double distance) {
+        public void ReadTrainState(out double speed, out double distance, out int gradient) {
             var currentTime = CurrentMilliseconds(); // in ms
             var callTimeGap = currentTime - lastDataCall;
 
@@ -277,10 +284,10 @@ namespace TSWOCR_WS {
                 memoryDistance = distanceMeters ?? 0;
                 anotherValidCount = 0;
                 properDistanceFound = true;
-            //} else if (distanceDiv10Valid && isKilo && distanceMeters / 10.0 >= 1000) {
-            //    memoryDistance = distanceMeters / 10.0 ?? 0;
-            //    anotherValidCount = 0;
-            //    properDistanceFound = true;
+                //} else if (distanceDiv10Valid && isKilo && distanceMeters / 10.0 >= 1000) {
+                //    memoryDistance = distanceMeters / 10.0 ?? 0;
+                //    anotherValidCount = 0;
+                //    properDistanceFound = true;
             } else {
                 var avgSpd = (prevSpeed + finalSpeed) * 0.5;
                 var estimateDist = (avgSpd / 3.6) * (callTimeGap / 1000.0);
@@ -325,6 +332,14 @@ namespace TSWOCR_WS {
                 lastKiloFactor = 1;
                 memoryDistance = 0;
                 finalDistance = 0;
+            }
+
+            // read gradient
+            var v = OCRGradientRead();
+            if (v == null) {
+                gradient = -100;
+            } else {
+                gradient = (int)v;
             }
 
             // Data output
@@ -417,7 +432,19 @@ namespace TSWOCR_WS {
             double speed;
 
             using (Bitmap bitmap = Screenshot(speedBounds)) {
-                OptimiseForOCR(bitmap, 230);
+                for (var y = 0; y < bitmap.Height; y++) {
+                    for (var x = 0; x < bitmap.Width; x++) {
+                        Color inv = bitmap.GetPixel(x, y);
+
+                        if ((inv.R < 230 || inv.G < 230 || inv.B < 230) && ColorDist(inv, Color.FromArgb(240, 101, 118)) > 30 && ColorDist(inv, Color.FromArgb(218, 216, 141)) > 30) {
+                            bitmap.SetPixel(x, y, Color.White);
+                            continue;
+                        }
+
+                        bitmap.SetPixel(x, y, Color.FromArgb(inv.ToArgb() ^ 0xffffff));
+                    }
+                }
+
                 var ocrResult = speedOCR.Process(bitmap);
                 rawSpeed = ocrResult.GetText().Trim().Replace(",", ".").Replace(" ", "").Replace("?", "").Replace("o", "0").Replace("g", "9");
                 ocrResult.Dispose();
@@ -445,13 +472,14 @@ namespace TSWOCR_WS {
             string rawDistance;
             bool kilo;
             double distance;
+            var dotExists = false;
 
             using (Bitmap bitmap = Screenshot(distanceBounds)) {
                 for (var x = 0; x < bitmap.Width; x++) {
                     for (var y = 0; y < bitmap.Height; y++) {
                         Color inv = bitmap.GetPixel(x, y);
 
-                        if (inv.R < 200 && inv.G < 200 && inv.B < 200) {
+                        if (inv.R < 160 && inv.G < 160 && inv.B < 160) {
                             bitmap.SetPixel(x, y, Color.White);
                             continue;
                         }
@@ -464,7 +492,35 @@ namespace TSWOCR_WS {
                         bitmap.SetPixel(x, y, Color.FromArgb(inv.ToArgb() ^ 0xffffff));
                     }
                 }
+
+                // find floating point manually to divide by 10 correctly - reliable solution if made properly
+                {
+                    var dotY = distanceBounds.Height - 14;
+                    var dCnt = 0;
+                    for (var x = 5; x < bitmap.Width * 0.5; x++) {
+                        var i = bitmap.GetPixel(x, dotY);
+                        var i2 = bitmap.GetPixel(x - 1, dotY - 3); // 1
+                        var i3 = bitmap.GetPixel(x, dotY - 8); // 7
+                        if (ColorDist(i, Color.White) > 200) {
+                            //Console.WriteLine(x + " DOT " + ColorDist(i, Color.White));
+                            dCnt += 1;
+                        } else {
+                            if (dCnt > 0)
+                                //Console.WriteLine(x + " CHK");
+                                if (dCnt > 2 && dCnt < 6 && ColorDist(i2, Color.Black) > 200 && ColorDist(i3, Color.Black) > 200) {
+                                    //Console.WriteLine(x + "A");
+                                    dotExists = true;
+                                }
+                            dCnt = 0;
+                        }
+                    }
+                }
+
                 var ocrResult = stationOCR.Process(bitmap);
+                //if (ocrResult.GetMeanConfidence() < 0.1) {
+                //    ocrResult.Dispose();
+                //    return null;
+                //}
                 rawDistance = ocrResult.GetText().Trim().Replace(" ", "");
                 ocrResult.Dispose();
             }
@@ -476,11 +532,128 @@ namespace TSWOCR_WS {
             kilo = rawDistance.EndsWith("km");
             try {
                 distance = double.Parse(rawDistance.Substring(0, rawDistance.Length - (kilo ? 2 : 1)));
+
+                if (dotExists && !rawDistance.Contains(".") && kilo) {
+                    distance /= 10;
+                }
             } catch (FormatException) {
                 return null;
             }
 
             return (distance, kilo);
+        }
+
+        private int? OCRGradientRead() {
+            Rectangle gradientBounds = new Rectangle(2338, 1140, 64, 40);
+
+            string value = "";
+            int num;
+
+            using (Bitmap bitmap = Screenshot(gradientBounds)) {
+                bool checkSegment(int x) {
+                    int s = 0;
+                    for (int y = 12; y <= 18; y++) {
+                        if (d(x, y) == 1) s++;
+                    }
+                    if (s < 5) s = 0;
+
+                    for (int y = 22; y <= 29; y++) {
+                        if (d(x, y) == 1) s++;
+                    }
+
+                    return s >= 6;
+                }
+
+                int d(int x, int y) {
+                    var p = bitmap.GetPixel(x, y);
+                    if (p.R > 170 && p.G > 170 && p.B > 170) {
+                        return 1;
+                    } else return 0;
+                }
+
+                int readSegmentedNumber(int topX, int topY) {
+                    int s = 0;
+                    s += d(topX + 7, topY + 1) << 6;
+                    s += d(topX + 1, topY + 6) << 5;
+                    s += d(topX + 12, topY + 6) << 4;
+                    s += d(topX + 7, topY + 12) << 3;
+                    s += d(topX + 1, topY + 17) << 2;
+                    s += d(topX + 12, topY + 17) << 1;
+                    s += d(topX + 7, topY + 23) << 0;
+
+                    return s;
+                }
+
+                for (int x = bitmap.Width - 1; x >= 13; x--) {
+                    if (d(x, 0) == 1) return null;
+                    if (checkSegment(x)) {
+                        int v = readSegmentedNumber(x - 13, 8);
+
+                        //Console.WriteLine("SEGMENT " + x + " " + Convert.ToString(v, 2));
+
+                        x -= 14;
+
+                        switch (v) {
+                            case 0b1110111: // 0
+                                value = "0" + value;
+                                break;
+                            case 0b0010010: // 1
+                                value = "1" + value;
+                                break;
+                            case 0b1011101: // 2
+                                value = "2" + value;
+                                break;
+                            case 0b1011011: // 3
+                                value = "3" + value;
+                                break;
+                            case 0b0111010: // 4
+                                value = "4" + value;
+                                break;
+                            case 0b1101011: // 5
+                                value = "5" + value;
+                                break;
+                            case 0b1101111: // 6
+                                value = "6" + value;
+                                break;
+                            case 0b1110010: // 7
+                                value = "7" + value;
+                                break;
+                            case 0b1111111: // 8
+                                value = "8" + value;
+                                break;
+                            case 0b1111011: // 9
+                                value = "9" + value;
+                                break;
+                            default:
+                                break;
+                        }
+
+                        //Console.WriteLine(value);
+                    }
+                }
+            }
+
+            if (value.Length <= 0 || value.Contains("No")) {
+                return null;
+            }
+
+            var downHill = false;
+            // Downhill detection
+            using (Bitmap bitmap = Screenshot(new Rectangle(2316, 1116, 1, 1))) {
+                if (ColorDist(bitmap.GetPixel(0, 0), Color.FromArgb(119, 119, 119)) < 12) {
+                    downHill = true;
+                }
+            }
+
+            if (downHill) value = "-" + value;
+
+            try {
+                num = int.Parse(value);
+            } catch (FormatException) {
+                return null;
+            }
+
+            return num;
         }
 
         #endregion
@@ -531,7 +704,6 @@ namespace TSWOCR_WS {
                     }
                 }
 
-                //bitmap.Save("test.png", System.Drawing.Imaging.ImageFormat.Png);
                 var ocrResult = planOCR.Process(bitmap);
                 rawDistance = ocrResult.GetText().Trim().Replace(" ", "");
                 ocrResult.Dispose();
@@ -590,7 +762,6 @@ namespace TSWOCR_WS {
             using (Bitmap bitmap = Screenshot(speedLimBounds)) {
                 OptimiseForOCR(bitmap, 160);
 
-                //bitmap.Save("test.png");
                 var ocrResult = kmhOCR.Process(bitmap);
                 rawRes = ocrResult.GetText().Trim().Replace(" ", "");
                 ocrResult.Dispose();
@@ -636,6 +807,7 @@ namespace TSWOCR_WS {
         public int SSGetStationState() {
             Rectangle doorIconBounds = new Rectangle(2125, 1119, 60, 5);
             Rectangle missionBounds = new Rectangle(475, 112, 303, 50);
+            Rectangle redBoxBounds = new Rectangle(2013, 1152, 10, 3);
 
             int value = 0;
 
@@ -651,10 +823,15 @@ namespace TSWOCR_WS {
                 OptimiseForOCR(bitmap, 200);
                 var ocrResult = gameMissionOCR.Process(bitmap);
                 var text = ocrResult.GetText().ToLower();
-                if (text.Contains("lock doors") && !text.Contains("unlock doors")) {
+                if (text.Contains("lock") && !text.Contains("unlock")) {
                     value += 1 << 2;
                 }
                 ocrResult.Dispose();
+            }
+            using (Bitmap bitmap = Screenshot(redBoxBounds)) {
+                if (ColorDist(bitmap.GetPixel(2, 1), Color.Red) < 50) { // Can't move
+                    value += 1 << 3;
+                }
             }
             return value;
         }
