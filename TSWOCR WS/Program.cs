@@ -544,7 +544,23 @@ namespace TSWOCR_WS {
         }
 
         private int? OCRGradientRead() {
-            Rectangle gradientBounds = new Rectangle(2338, 1140, 64, 40);
+            Rectangle gradientLocator = new Rectangle(2381, 1100, 1, 60);
+
+            int yFound = -1;
+
+            // Find the gradient
+            using (Bitmap bitmap = Screenshot(gradientLocator)) {
+                for (int i = bitmap.Height - 1; i >= 0; i--) {
+                    if (ColorDist(Color.FromArgb(120, 120, 120), bitmap.GetPixel(0, i)) < 50) {
+                        yFound = i;
+                        break;
+                    }
+                }
+            }
+
+            if (yFound == -1) return null;
+
+            Rectangle gradientBounds = new Rectangle(2338, gradientLocator.Top + yFound + 3, 64, 40);
 
             string value = "";
             int num;
@@ -639,7 +655,7 @@ namespace TSWOCR_WS {
 
             var downHill = false;
             // Downhill detection
-            using (Bitmap bitmap = Screenshot(new Rectangle(2316, 1116, 1, 1))) {
+            using (Bitmap bitmap = Screenshot(new Rectangle(2316, gradientLocator.Top + yFound - 20, 1, 1))) {
                 if (ColorDist(bitmap.GetPixel(0, 0), Color.FromArgb(119, 119, 119)) < 12) {
                     downHill = true;
                 }
