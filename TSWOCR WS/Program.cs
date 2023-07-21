@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Newtonsoft.Json.Linq;
+using System;
 using System.Drawing;
 using System.Drawing.Text;
 using System.IO;
@@ -17,11 +18,13 @@ namespace TSWOCR_WS {
         public static double speed = 0;
         public static double distance = 0;
         public static double gradient = 0;
-        public static double sld = 0;
-        public static double slv = 0;
-        public static int sgs = 0;
-        public static double sgd = 0;
+        public static double speedLimitDistance = 0;
+        public static double speedLimitValue = 0;
+        public static int signalState = 0;
+        public static double signalValue = 0;
         public static int stationState = -1;
+        public static int throttleLockState = 0;
+        public static double speedLimitRatio = 0;
 
         private static TcpClient autopilotSocket = null;
         private static BinaryWriter autopilotWriter = null;
@@ -59,7 +62,7 @@ namespace TSWOCR_WS {
                     }
                 } while (!sendSuc);
             } else {
-                Send(speed + ";" + distance + ";" + gradient + ";" + sld + ";" + slv + ";" + sgs + ";" + sgd);
+                Send(speed + ";" + distance + ";" + gradient + ";" + speedLimitDistance + ";" + speedLimitValue + ";" + signalState + ";" + signalValue + ";" + throttleLockState + ";" + speedLimitRatio);
                 if (stationState >= 0) {
                     Send("station;" + stationState);
                 }
@@ -130,16 +133,34 @@ namespace TSWOCR_WS {
             // Train Supervision Reading
             new Thread(() => {
                 while (true) {
-                    processor.ReadTrainSupervision(out double spdLimDist, out double spdLimVal, out int signal, out double signalDist);
+                    processor.ReadTrainSupervision(out double spdLimDist, out double spdLimVal, out int signal, out double signalDist, out int throttleLock);
 
-                    WebsocketProcessor.slv = spdLimVal;
-                    WebsocketProcessor.sld = spdLimDist;
-                    WebsocketProcessor.sgs = signal;
-                    WebsocketProcessor.sgd = signalDist;
+                    WebsocketProcessor.speedLimitValue = spdLimVal;
+                    WebsocketProcessor.speedLimitDistance = spdLimDist;
+                    WebsocketProcessor.signalState = signal;
+                    WebsocketProcessor.signalValue = signalDist;
+                    WebsocketProcessor.throttleLockState = throttleLock;
 
-                    Console.WriteLine("SUP " + spdLimVal + " in " + spdLimDist + " / " + signal + "s in " + signalDist);
+                    //Console.WriteLine("SUP " + spdLimVal + " in " + spdLimDist + " / " + signal + "s in " + signalDist);
 
                     Thread.Sleep(delay);
+                }
+            }) {
+                IsBackground = false
+            }.Start();
+
+            // Train SpeedLimit Reading
+            new Thread(() => {
+                while (true) {
+                    ScreenImageProcessor.ReadSpeedLimitInGauge(out double ratio);
+
+                    WebsocketProcessor.speedLimitRatio = ratio;
+                    Console.WriteLine(WebsocketProcessor.speedLimitRatio);
+                    if (delay == 0) {
+                        Thread.Sleep(500);
+                    } else {
+                        Thread.Sleep(1500);
+                    }
                 }
             }) {
                 IsBackground = false
@@ -155,7 +176,7 @@ namespace TSWOCR_WS {
 
                 double meters = distance;
 
-                Console.WriteLine("POS " + speed + " -> " + Math.Round(distance));
+                //Console.WriteLine("POS " + speed + " -> " + Math.Round(distance));
 
                 if (speed <= 0) {
                     int ss = processor.SSGetStationState();
@@ -189,6 +210,97 @@ namespace TSWOCR_WS {
             }
         }
 
+    }
+
+    static class ProcessorUtils {
+        public static Bitmap Screenshot(Rectangle bounds) {
+            var bm = new Bitmap(bounds.Width, bounds.Height);
+            using (Graphics g = Graphics.FromImage(bm)) {
+                g.CopyFromScreen(new Point(bounds.Left, bounds.Top), Point.Empty, bounds.Size);
+            }
+            return bm;
+        }
+
+        public static void OptimiseForOCR(Bitmap image, int maxColor) {
+            for (var y = 0; y < image.Height; y++) {
+                for (var x = 0; x < image.Width; x++) {
+                    Color inv = image.GetPixel(x, y);
+
+                    if (inv.R < maxColor || inv.G < maxColor || inv.B < maxColor) {
+                        image.SetPixel(x, y, Color.White);
+                        continue;
+                    }
+
+                    image.SetPixel(x, y, Color.FromArgb(inv.ToArgb() ^ 0xffffff));
+                }
+            }
+        }
+
+        public static double ColorDist(Color a, Color b) {
+            return Math.Sqrt(Math.Pow(a.R - b.R, 2) + Math.Pow(a.G - b.G, 2) + Math.Pow(a.G - b.G, 2) + Math.Pow(a.G - b.G, 2));
+        }
+    }
+
+    static class ScreenImageProcessor {
+        private const int RADIUS = 184;
+        private static double GaugeAngle(int x, int y) {
+            var c = Math.Atan2(y, x);
+            if (c > Math.PI / 2) c -= Math.PI / 2;
+            else c += Math.PI * 3 / 2;
+            return c;
+        }
+
+        private static readonly double ZERO_ANGLE = GaugeAngle(-171, 68);
+        private static readonly double MAX_ANGLE = GaugeAngle(171, 71);
+        private static readonly double ANGLE_SIZE = MAX_ANGLE - ZERO_ANGLE;
+
+        private static double getRawAngle(double vRatio) {
+            return (ANGLE_SIZE * vRatio) + ZERO_ANGLE + Math.PI / 2;
+        }
+
+        private static int lastIndexValue = 0;
+        private static readonly double IndexDividedBy = 2000;
+
+        public static void ReadSpeedLimitInGauge(out double ratio) {
+            // First, see whether teh speed limit changed or not
+            {
+                var a = getRawAngle(lastIndexValue / IndexDividedBy);
+                using (var b = ProcessorUtils.Screenshot(new Rectangle(2089 + (int)Math.Round(Math.Cos(a) * RADIUS), 1194 + (int)Math.Round(Math.Sin(a) * RADIUS), 1, 1))) {
+                    if (ProcessorUtils.ColorDist(b.GetPixel(0, 0), Color.Red) < 80) {
+                        ratio = lastIndexValue / IndexDividedBy;
+                        return;
+                    }
+                }
+            }
+            Rectangle bounds = new Rectangle(1897, 1003, 384, 276);
+            // center point becomes: (2089 - 1897, 1194 - 1003) = (192, 191)
+            int cx = 192;
+            int cy = 191;
+            using (var b = ProcessorUtils.Screenshot(bounds)) {
+                var a = getRawAngle(lastIndexValue / IndexDividedBy);
+                var co = b.GetPixel(cx + (int)Math.Round(Math.Cos(a) * RADIUS), cy + (int)Math.Round(Math.Sin(a) * RADIUS));
+                if (ProcessorUtils.ColorDist(co, Color.Red) < 80) {
+                    ratio = lastIndexValue / IndexDividedBy;
+                    return;
+                }
+
+                int cnt = 0;
+
+                for (int i = 0; i <= IndexDividedBy; i++) {
+                    a = getRawAngle(i / IndexDividedBy);
+                    co = b.GetPixel(cx + (int)Math.Round(Math.Cos(a) * RADIUS), cy + (int)Math.Round(Math.Sin(a) * RADIUS));
+                    if (ProcessorUtils.ColorDist(co, Color.Red) < 80) {
+                        cnt++;
+                    } else {
+                        lastIndexValue = i - cnt / 2;
+                        ratio = lastIndexValue / IndexDividedBy;
+                        if (cnt > 0) return;
+                    }
+                }
+            }
+            ratio = -1;
+            lastIndexValue = 0;
+        }
     }
 
     class RawDataProcessor {
@@ -351,11 +463,11 @@ namespace TSWOCR_WS {
             anotherDist = distanceMeters ?? 0;
         }
 
-        public void ReadTrainSupervision(out double spdLimDist, out double spdLimValue, out int signal, out double signalDist) {
+        public void ReadTrainSupervision(out double spdLimDist, out double spdLimValue, out int signal, out double signalDist, out int throttleLock) {
             // Signal data detection
             var signalState = SSGetSignalState();
             signal = signalState;
-            if (signalState <= 0) {
+            if (signalState < 0) {
                 signalDist = -1;
             } else {
                 var signalDistanceData = OCRSpdLimDistanceAndIsKiloRead(-67);
@@ -395,6 +507,8 @@ namespace TSWOCR_WS {
                     spdLimValue = -1;
                 }
             }
+
+            throttleLock = SSGetThrottleLockState() ? 1 : 0;
         }
 
         private bool ValidateDistance(double? rawMetersRemain, double currentV, long dataCallInterval, bool isKilo, double prevDist, double prevSpeed) {
@@ -431,12 +545,12 @@ namespace TSWOCR_WS {
             string rawSpeed;
             double speed;
 
-            using (Bitmap bitmap = Screenshot(speedBounds)) {
+            using (Bitmap bitmap = ProcessorUtils.Screenshot(speedBounds)) {
                 for (var y = 0; y < bitmap.Height; y++) {
                     for (var x = 0; x < bitmap.Width; x++) {
                         Color inv = bitmap.GetPixel(x, y);
 
-                        if ((inv.R < 230 || inv.G < 230 || inv.B < 230) && ColorDist(inv, Color.FromArgb(240, 101, 118)) > 30 && ColorDist(inv, Color.FromArgb(218, 216, 141)) > 30) {
+                        if ((inv.R < 230 || inv.G < 230 || inv.B < 230) && ProcessorUtils.ColorDist(inv, Color.FromArgb(240, 101, 118)) > 50 && ProcessorUtils.ColorDist(inv, Color.FromArgb(218, 216, 141)) > 50 && ProcessorUtils.ColorDist(inv, Color.FromArgb(240, 240, 141)) > 50) {
                             bitmap.SetPixel(x, y, Color.White);
                             continue;
                         }
@@ -474,18 +588,18 @@ namespace TSWOCR_WS {
             double distance;
             var dotExists = false;
 
-            using (Bitmap bitmap = Screenshot(distanceBounds)) {
+            using (Bitmap bitmap = ProcessorUtils.Screenshot(distanceBounds)) {
                 for (var x = 0; x < bitmap.Width; x++) {
                     for (var y = 0; y < bitmap.Height; y++) {
                         Color inv = bitmap.GetPixel(x, y);
 
                         if (inv.R < 160 && inv.G < 160 && inv.B < 160) {
-                            bitmap.SetPixel(x, y, Color.White);
+                            bitmap.SetPixel(x, y, Color.Gray);
                             continue;
                         }
 
                         if (y > x * 1.4 + 19) {
-                            bitmap.SetPixel(x, y, Color.White);
+                            bitmap.SetPixel(x, y, Color.Gray);
                             continue;
                         }
 
@@ -501,13 +615,13 @@ namespace TSWOCR_WS {
                         var i = bitmap.GetPixel(x, dotY);
                         var i2 = bitmap.GetPixel(x - 1, dotY - 3); // 1
                         var i3 = bitmap.GetPixel(x, dotY - 8); // 7
-                        if (ColorDist(i, Color.White) > 200) {
+                        if (ProcessorUtils.ColorDist(i, Color.Gray) > 150) {
                             //Console.WriteLine(x + " DOT " + ColorDist(i, Color.White));
                             dCnt += 1;
                         } else {
                             if (dCnt > 0)
                                 //Console.WriteLine(x + " CHK");
-                                if (dCnt > 2 && dCnt < 6 && ColorDist(i2, Color.Black) > 200 && ColorDist(i3, Color.Black) > 200) {
+                                if (dCnt > 2 && dCnt < 6 && ProcessorUtils.ColorDist(i2, Color.Black) > 200 && ProcessorUtils.ColorDist(i3, Color.Black) > 200) {
                                     //Console.WriteLine(x + "A");
                                     dotExists = true;
                                 }
@@ -549,9 +663,9 @@ namespace TSWOCR_WS {
             int yFound = -1;
 
             // Find the gradient
-            using (Bitmap bitmap = Screenshot(gradientLocator)) {
+            using (Bitmap bitmap = ProcessorUtils.Screenshot(gradientLocator)) {
                 for (int i = bitmap.Height - 1; i >= 0; i--) {
-                    if (ColorDist(Color.FromArgb(120, 120, 120), bitmap.GetPixel(0, i)) < 50) {
+                    if (ProcessorUtils.ColorDist(Color.FromArgb(120, 120, 120), bitmap.GetPixel(0, i)) < 50) {
                         yFound = i;
                         break;
                     }
@@ -565,7 +679,7 @@ namespace TSWOCR_WS {
             string value = "";
             int num;
 
-            using (Bitmap bitmap = Screenshot(gradientBounds)) {
+            using (Bitmap bitmap = ProcessorUtils.Screenshot(gradientBounds)) {
                 bool checkSegment(int x) {
                     int s = 0;
                     for (int y = 12; y <= 18; y++) {
@@ -655,8 +769,8 @@ namespace TSWOCR_WS {
 
             var downHill = false;
             // Downhill detection
-            using (Bitmap bitmap = Screenshot(new Rectangle(2316, gradientLocator.Top + yFound - 20, 1, 1))) {
-                if (ColorDist(bitmap.GetPixel(0, 0), Color.FromArgb(119, 119, 119)) < 12) {
+            using (Bitmap bitmap = ProcessorUtils.Screenshot(new Rectangle(2316, gradientLocator.Top + yFound - 20, 1, 1))) {
+                if (ProcessorUtils.ColorDist(bitmap.GetPixel(0, 0), Color.FromArgb(119, 119, 119)) < 12) {
                     downHill = true;
                 }
             }
@@ -683,7 +797,7 @@ namespace TSWOCR_WS {
             double distance;
             var dotExists = false;
 
-            using (Bitmap bitmap = Screenshot(spdLimDistanceBounds)) {
+            using (Bitmap bitmap = ProcessorUtils.Screenshot(spdLimDistanceBounds)) {
                 for (var x = 0; x < bitmap.Width; x++) {
                     int colorTolerance = (x * -50 / bitmap.Width) + 240;
                     for (var y = 0; y < bitmap.Height; y++) {
@@ -705,13 +819,13 @@ namespace TSWOCR_WS {
                         var i = bitmap.GetPixel(x, dotY);
                         var i2 = bitmap.GetPixel(x, dotY - 3); // 1
                         var i3 = bitmap.GetPixel(x, dotY - 8); // 7
-                        if (ColorDist(i, Color.White) > 200) {
+                        if (ProcessorUtils.ColorDist(i, Color.White) > 200) {
                             //Console.WriteLine(x + " DOT " + ColorDist(i, Color.White));
                             dCnt += 1;
                         } else {
                             if (dCnt > 0)
                                 //Console.WriteLine(x + " CHK");
-                                if (dCnt > 2 && dCnt < 6 && ColorDist(i2, Color.Black) > 200 && ColorDist(i3, Color.Black) > 200) {
+                                if (dCnt > 2 && dCnt < 6 && ProcessorUtils.ColorDist(i2, Color.Black) > 200 && ProcessorUtils.ColorDist(i3, Color.Black) > 200) {
                                     //Console.WriteLine(x + "A");
                                     dotExists = true;
                                 }
@@ -749,8 +863,8 @@ namespace TSWOCR_WS {
             string rawSpeed;
             double speed;
 
-            using (Bitmap bitmap = Screenshot(speedLimBounds)) {
-                OptimiseForOCR(bitmap, 230);
+            using (Bitmap bitmap = ProcessorUtils.Screenshot(speedLimBounds)) {
+                ProcessorUtils.OptimiseForOCR(bitmap, 230);
 
                 var ocrResult = planOCR.Process(bitmap);
                 rawSpeed = ocrResult.GetText().Trim().Replace(" ", "");
@@ -775,8 +889,8 @@ namespace TSWOCR_WS {
 
             string rawRes;
 
-            using (Bitmap bitmap = Screenshot(speedLimBounds)) {
-                OptimiseForOCR(bitmap, 160);
+            using (Bitmap bitmap = ProcessorUtils.Screenshot(speedLimBounds)) {
+                ProcessorUtils.OptimiseForOCR(bitmap, 160);
 
                 var ocrResult = kmhOCR.Process(bitmap);
                 rawRes = ocrResult.GetText().Trim().Replace(" ", "");
@@ -795,14 +909,14 @@ namespace TSWOCR_WS {
         private int SSGetSignalState() {
             Rectangle bounds = new Rectangle(2407, 231, 24, 19);
 
-            using (Bitmap bitmap = Screenshot(bounds)) {
+            using (Bitmap bitmap = ProcessorUtils.Screenshot(bounds)) {
                 var c = bitmap.GetPixel(3, 16);
-                var dG = ColorDist(c, cG);
-                var dY = ColorDist(c, cY);
-                var dR = ColorDist(c, cR);
-                var isSignal = ColorDist(Color.White, bitmap.GetPixel(19, 2)) > 160;
+                var dG = ProcessorUtils.ColorDist(c, cG);
+                var dY = ProcessorUtils.ColorDist(c, cY);
+                var dR = ProcessorUtils.ColorDist(c, cR);
+                var isSignal = ProcessorUtils.ColorDist(Color.White, bitmap.GetPixel(19, 2)) > 160;
 
-                Console.WriteLine(dG + ", " + dY + ", " + dR + ", " + ColorDist(Color.White, bitmap.GetPixel(19, 2)));
+                Console.WriteLine(dG + ", " + dY + ", " + dR + ", " + ProcessorUtils.ColorDist(Color.White, bitmap.GetPixel(19, 2)));
 
                 if (!isSignal) {
                     return -1;
@@ -818,25 +932,36 @@ namespace TSWOCR_WS {
             }
         }
 
+        private bool SSGetThrottleLockState() {
+            Rectangle redBoxBounds = new Rectangle(2013, 1152, 10, 3);
+
+            using (Bitmap bitmap = ProcessorUtils.Screenshot(redBoxBounds)) {
+                if (ProcessorUtils.ColorDist(bitmap.GetPixel(2, 1), Color.Red) < 50) { // Can't move
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         #endregion
         #region Game mission OCR while stopped
         public int SSGetStationState() {
             Rectangle doorIconBounds = new Rectangle(2125, 1119, 60, 5);
             Rectangle missionBounds = new Rectangle(475, 112, 303, 50);
-            Rectangle redBoxBounds = new Rectangle(2013, 1152, 10, 3);
 
             int value = 0;
 
-            using (Bitmap bitmap = Screenshot(doorIconBounds)) {
-                if (ColorDist(bitmap.GetPixel(2, 2), Color.White) < 20) { // Left doors open now
+            using (Bitmap bitmap = ProcessorUtils.Screenshot(doorIconBounds)) {
+                if (ProcessorUtils.ColorDist(bitmap.GetPixel(2, 2), Color.White) < 20) { // Left doors open now
                     value += 1 << 0;
                 }
-                if (ColorDist(bitmap.GetPixel(55, 2), Color.White) < 20) { // Right doors open now
+                if (ProcessorUtils.ColorDist(bitmap.GetPixel(55, 2), Color.White) < 20) { // Right doors open now
                     value += 1 << 1;
                 }
             }
-            using (Bitmap bitmap = Screenshot(missionBounds)) {
-                OptimiseForOCR(bitmap, 200);
+            using (Bitmap bitmap = ProcessorUtils.Screenshot(missionBounds)) {
+                ProcessorUtils.OptimiseForOCR(bitmap, 200);
                 var ocrResult = gameMissionOCR.Process(bitmap);
                 var text = ocrResult.GetText().ToLower();
                 if (text.Contains("lock") && !text.Contains("unlock")) {
@@ -844,40 +969,8 @@ namespace TSWOCR_WS {
                 }
                 ocrResult.Dispose();
             }
-            using (Bitmap bitmap = Screenshot(redBoxBounds)) {
-                if (ColorDist(bitmap.GetPixel(2, 1), Color.Red) < 50) { // Can't move
-                    value += 1 << 3;
-                }
-            }
             return value;
         }
         #endregion
-
-        static Bitmap Screenshot(Rectangle bounds) {
-            var bm = new Bitmap(bounds.Width, bounds.Height);
-            using (Graphics g = Graphics.FromImage(bm)) {
-                g.CopyFromScreen(new Point(bounds.Left, bounds.Top), Point.Empty, bounds.Size);
-            }
-            return bm;
-        }
-
-        static void OptimiseForOCR(Bitmap image, int maxColor) {
-            for (var y = 0; y < image.Height; y++) {
-                for (var x = 0; x < image.Width; x++) {
-                    Color inv = image.GetPixel(x, y);
-
-                    if (inv.R < maxColor || inv.G < maxColor || inv.B < maxColor) {
-                        image.SetPixel(x, y, Color.White);
-                        continue;
-                    }
-
-                    image.SetPixel(x, y, Color.FromArgb(inv.ToArgb() ^ 0xffffff));
-                }
-            }
-        }
-
-        static double ColorDist(Color a, Color b) {
-            return Math.Sqrt(Math.Pow(a.R - b.R, 2) + Math.Pow(a.G - b.G, 2) + Math.Pow(a.G - b.G, 2) + Math.Pow(a.G - b.G, 2));
-        }
     }
 }

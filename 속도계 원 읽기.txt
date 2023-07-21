@@ -1,0 +1,31 @@
+원의 중심: (2089, 1194)
+
+속도 0일 때, (1918, 1262) 상대좌표 (-171, 68)
+최대일 때, 상대좌표 (171, 68)
+중간일 때, (2089, 1010) 상대좌표 (0, -184)
+
+atan2(y, x)
+
+반지름: 184
+속도 0일 때 atan값: 
+속도 v일 때 각의 크기 (최대 속도는 V): 
+
+function gaugeAngle(x, y) {
+    var c = Math.atan2(y, x);
+    if(c > Math.PI / 2) c -= Math.PI / 2;
+    else c += Math.PI * 3 / 2;
+    return c;
+}
+
+const ZERO_ANGLE = gaugeAngle(-171, 68);
+const MAX_ANGLE = gaugeAngle(171, 68);
+const ANGLE_SIZE = MAX_ANGLE - ZERO_ANGLE;
+function getSpeedRatio(x, y) {
+    return (gaugeAngle(x, y) - ZERO_ANGLE) / ANGLE_SIZE;
+}
+
+const RADIUS = 184;
+function getSpeedPosition(vRatio) {
+    var angle = ((ANGLE_SIZE * vRatio) + ZERO_ANGLE) + Math.PI / 2;
+    return [RADIUS * Math.cos(angle), RADIUS * Math.sin(angle)]
+}
