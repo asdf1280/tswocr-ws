@@ -1,17 +1,14 @@
-﻿using Newtonsoft.Json.Linq;
-using System;
+﻿using System;
 using System.Drawing;
 using System.Drawing.Text;
 using System.IO;
 using System.Net.Sockets;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using Tesseract;
 using WebSocketSharp;
 using WebSocketSharp.Net;
 using WebSocketSharp.Server;
-using static System.Net.Mime.MediaTypeNames;
 
 namespace TSWOCR_WS {
     class WebsocketProcessor : WebSocketBehavior {
